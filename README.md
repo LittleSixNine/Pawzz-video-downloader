@@ -1,4 +1,4 @@
-# Pawzz Video
+# Pawzz-video-downloader
 
 **把趴趴爪喂食器里的日常录像，留一份在自己手里。**
 
@@ -87,10 +87,10 @@ docker compose up -d --build
 
 Agent 必须运行在能访问设备局域网的 Mac / Linux 上。只在云端运行、没有本地执行能力的聊天助手不能直接连接你的设备。手机号和验证码由你在本机网页中输入，Agent 不代填、不截取这些输入。“安装”本身不会开始导出。现有 Skill 的默认流程使用会话文件；需要短信登录时，使用下方明确指定 `--web-login` 的任务文案。
 
-**复制下面这段给 Agent，把第一行换成项目的 GitHub 地址或本地路径：**
+**复制下面这段给 Agent；如本机已有项目副本，可把第一行改成本地路径：**
 
 ```text
-项目地址或本地路径：[粘贴 Pawzz Video 的 GitHub 链接或本地项目路径]
+项目地址：https://github.com/LittleSixNine/Pawzz-video-downloader
 
 请帮我安装这个项目，以及其中 skills/pawzz-export 的 Skill。
 先阅读 README、LICENSE 和 SKILL.md；复用已有环境，缺少时建立独立的 Python 3.10+ 环境并安装项目依赖。
