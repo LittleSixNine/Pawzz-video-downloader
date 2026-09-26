@@ -1,0 +1,42 @@
+# Local settings and all private/runtime material
+.env
+.env.*
+!.env.example
+*.log
+*.mp4
+*.mp4.json
+*.part
+session*.json
+settings.json
+admin-token
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+.codex/
+private/
+data/
+config/
+
+# Generated deliverables and private work records
+history.json
+*.pem
+*.key
+*.zip
+*.tar
+*.tar.gz
+*.apk
+*.pcap
+*.pcapng
+logs/
+runtime/
+archive/
+personal-data/
+
+# Desktop-specific private settings
+local.json
+instance.lock
+
+# Encrypted credentials are still private.
+*.enc
+account-disabled

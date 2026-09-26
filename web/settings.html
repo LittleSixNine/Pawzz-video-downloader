@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>Pawzz Video · 管理台</title><link rel="stylesheet" href="/settings.css"><script src="/settings.js" defer></script></head>
+<body class="signed-out" data-mode="server">
+<svg class="icon-defs" aria-hidden="true"><defs>
+<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+<symbol id="i-list" viewBox="0 0 24 24"><path d="M9 5h12M9 12h12M9 19h12M3 5h1M3 12h1M3 19h1"/></symbol>
+<symbol id="i-disk" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M6 7.5h1M6 17.5h1M17 7.5h1M17 17.5h1"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 4-5 8-8 9-3-1-8-5-8-9V6zM9 12l2 2 4-4"/></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 1v2M12 21v2M1 12h2M21 12h2M4 4l2 2M18 18l2 2M4 20l2-2M18 6l2-2"/></symbol>
+<symbol id="i-arrow" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 12 8-12 8z"/></symbol>
+<symbol id="i-paw" viewBox="0 0 32 32"><ellipse cx="7" cy="11" rx="3" ry="4"/><ellipse cx="13" cy="6" rx="3" ry="4"/><ellipse cx="21" cy="6" rx="3" ry="4"/><ellipse cx="27" cy="12" rx="3" ry="4"/><path d="M8 22c0-4 5-10 9-10s9 6 9 10c0 6-5 4-9 4s-9 2-9-4"/></symbol>
+</defs></svg>
+<aside class="sidebar">
+<a class="brand" href="#overview" aria-label="Pawzz Video 首页"><svg class="paw"><use href="#i-paw"/></svg><span>Pawzz Video<small id="mode-label">后台持续归档</small></span></a>
+<nav aria-label="主导航" id="navigation" hidden>
+<span class="nav-label">工作台</span>
+<button data-page="overview" class="nav-item active" aria-current="page"><svg><use href="#i-grid"/></svg>概览</button>
+<button data-page="tasks" class="nav-item"><svg><use href="#i-list"/></svg><span id="tasks-label">归档任务</span></button>
+<span class="nav-label management">管理</span>
+<button data-page="settings" class="nav-item"><svg><use href="#i-disk"/></svg>设备与存储</button>
+<button data-page="diagnostics" class="nav-item"><svg><use href="#i-check"/></svg>诊断</button>
+<button data-page="access" class="nav-item"><svg><use href="#i-shield"/></svg>访问设置</button>
+</nav>
+<div class="sidebar-bottom"><button id="theme-toggle" class="theme-toggle" aria-label="切换到深色模式" aria-pressed="false"><svg><use href="#i-sun"/></svg><span id="theme-label">浅色模式</span><span class="switch" aria-hidden="true"></span></button><p>原片保留 · 私有存储</p></div>
+</aside>
+<div class="workspace">
+<header class="topbar"><span id="breadcrumb">本地管理入口</span><span class="service"><span class="dot" id="service-dot"></span><span id="connection">未连接管理服务</span></span></header>
+<main>
+<p id="message" class="notice" role="status" aria-live="polite" hidden></p>
+<section id="login" class="login-panel">
+<span class="eyebrow">PAWZZ VIDEO / 管理台</span><h1 id="login-title">归档状态，一目了然。</h1><p id="login-description">连接管理服务，查看任务进度、设备配置与存储状态。</p>
+<form id="login-form"><label for="key">管理密钥</label><input id="key" type="password" autocomplete="off" required placeholder="输入管理密钥"><button type="submit">连接管理台 <span aria-hidden="true">→</span></button></form>
+<p class="login-help">首次使用：在配置目录的 <code>admin-token</code> 文件中获取密钥。密钥仅保留在当前页面内存中。</p>
+<div class="privacy-line"><svg><use href="#i-shield"/></svg>登录会话和录像保存在自己的设备上</div>
+</section>
+<div id="console" hidden>
+<div class="page-heading"><div><span class="eyebrow" id="page-eyebrow">工作台</span><h1 id="page-title" tabindex="-1">概览</h1><p id="page-description">快速了解归档与管理状态。</p></div><div class="heading-actions"><button id="stop-now" class="secondary" hidden>停止本次导出</button><button id="run" disabled><svg><use href="#i-play"/></svg><span id="run-label">运行一次</span></button></div></div>
+<section data-view="overview" id="overview-view">
+<div class="metrics"><div class="metric"><span class="metric-icon"><svg><use href="#i-clock"/></svg></span><div><span id="metric-success-label">最近成功归档</span><strong id="metric-success">暂无记录</strong><small id="metric-success-detail">完成任务后显示</small></div></div><div class="metric"><span class="metric-icon"><svg><use href="#i-list"/></svg></span><div><span id="metric-count-label">最近一轮新增</span><strong id="metric-count">—</strong><small id="metric-count-detail">尚未运行</small></div></div><div class="metric"><span class="metric-icon"><svg><use href="#i-disk"/></svg></span><div><span>可用空间</span><strong id="metric-space">—</strong><small>输出目录所在文件系统</small></div></div></div>
+<div class="dashboard-grid"><div class="primary-column">
+<section class="panel archive-status"><div class="panel-heading"><h2 id="status-title">归档状态</h2><span id="state-badge" class="badge">等待设置</span></div><div class="status-body"><div class="status-mark"><svg><use href="#i-disk"/></svg></div><div><h3 id="state">准备你的归档服务</h3><p id="result">配置设备和登录会话后，即可开始归档。</p><p id="timing" class="muted"></p></div></div><div class="status-footer"><span id="run-hint">首次使用请先完成设备设置。</span><button data-page="settings" class="text-button">设备设置 <span>→</span></button></div></section>
+<section class="panel"><div class="panel-heading"><h2>最近任务</h2><button data-page="tasks" class="text-button">查看全部 <span>→</span></button></div><div id="recent-empty" class="empty-state"><svg><use href="#i-list"/></svg><h3>还没有任务记录</h3><p>开始第一轮导出后，结果会显示在这里。<br>服务重启后，任务历史依然保留。</p></div><div class="table-scroll" id="recent-table-wrap" hidden><table><thead><tr><th>开始时间</th><th>范围</th><th>新增</th><th>状态</th></tr></thead><tbody id="recent-rows"></tbody></table></div></section>
+<section class="attention" id="attention-panel" hidden><div class="attention-icon">!</div><div><h2>需要关注</h2><ul id="attention-list"></ul></div><button data-page="diagnostics" class="text-button">查看诊断 →</button></section>
+</div><div class="secondary-column">
+<section class="panel desktop-only"><div class="panel-heading"><h2>本次导出</h2><span class="badge">手动启动</span></div><dl class="detail-list"><div><dt>导出范围</dt><dd id="local-scope">全部日期</dd></div><div><dt>保存到</dt><dd id="local-output-summary">—</dd></div><div><dt>完成以后</dt><dd>结束本轮，不会自动重跑</dd></div></dl><button data-page="settings" class="secondary full">准备与导出设置</button><p class="panel-footnote">导出时保持电脑唤醒、连接设备所在局域网。关闭网页不会停止任务；退出启动窗口会停止服务。</p></section>
+<section class="panel server-only"><div class="panel-heading"><h2>自动归档</h2><span id="automatic-badge" class="badge">未开启</span></div><dl class="detail-list"><div><dt>执行间隔</dt><dd id="schedule-interval">每轮完成后 1 天</dd></div><div><dt>下一轮</dt><dd id="schedule-next">手动执行</dd></div><div><dt>归档范围</dt><dd id="schedule-scope">全部日期</dd></div></dl><button data-page="settings" class="secondary full">修改归档设置</button><p class="panel-footnote">失败后每 10 分钟重试，最多 3 次；仍失败则等待下一常规周期。</p></section>
+<section class="panel"><div class="panel-heading"><h2>连接与准备</h2><button data-page="diagnostics" class="icon-link" aria-label="查看连接诊断"><svg><use href="#i-arrow"/></svg></button></div><ul class="check-list"><li><div>设备配置<small id="device-subtitle">尚未配置</small></div><span id="device-check" class="badge">待设置</span></li><li><div>登录会话<small>凭据来源与保留方式见设备页</small></div><span id="session-check" class="badge">未挂载</span></li><li><div>设备与回调<small>需真实设备联调确认</small></div><span class="badge">未检测</span></li></ul></section>
+<div class="quiet-note"><svg><use href="#i-shield"/></svg><p>原片不转码、不覆盖。<br>通过校验后才发布为正式文件。</p></div>
+</div></div>
+</section>
+<section data-view="tasks" hidden><section class="panel"><div class="panel-heading"><div><h2>任务历史</h2><p>保留最近 100 轮任务；时间按当前浏览器时区显示。</p></div><button id="stop" class="secondary" disabled>停止并关闭自动归档</button></div><div id="history-empty" class="empty-state"><svg><use href="#i-clock"/></svg><h3>暂无任务</h3><p>每次任务的结果都会记录在这里，关闭服务后仍会保留。</p></div><div class="table-scroll" id="history-table-wrap" hidden><table class="history-table"><thead><tr><th>开始时间 / 耗时</th><th>触发 / 范围</th><th>新增</th><th>状态</th><th>结果</th></tr></thead><tbody id="history-rows"></tbody></table></div></section><p class="footnote">再次开始会按当前已保存范围重新扫描，已通过校验的文件会跳过。</p></section>
+<section data-view="settings" hidden>
+<section class="panel" id="account-panel">
+<div class="panel-heading"><div><h2>登录趴趴爪账号</h2><p>使用官方 App 的手机号，在这里输入短信验证码。登录后仍需单独开始导出。</p></div><span id="account-badge" class="badge">未登录</span></div>
+<p id="account-transport" class="notice" hidden>NAS 登录需要 HTTPS。请按部署指南配置证书后再打开页面；普通 HTTP 不接收手机号和验证码。</p>
+<div id="account-signed-in" hidden><p id="account-detail"></p><button id="account-logout" class="secondary" type="button">退出账号并清除本程序保存的凭据</button><p class="panel-footnote">退出会停止当前任务并关闭自动归档。外部导入文件、只读挂载原件及备份不会被删除；厂商端会话也不会被撤销。</p></div>
+<form id="account-form" autocomplete="off">
+<div class="form-grid"><label>手机号<input id="account-phone" type="tel" inputmode="numeric" autocomplete="off" maxlength="11" pattern="1[3-9][0-9]{9}" placeholder="中国大陆手机号" required></label><div><label for="account-code">短信验证码</label><div class="code-row"><input id="account-code" type="password" inputmode="numeric" autocomplete="off" minlength="4" maxlength="8" pattern="[0-9]{4,8}" placeholder="输入验证码" required><button id="send-code" type="button" class="secondary">发送验证码</button></div></div></div>
+<label class="check server-only"><input id="remember-account" type="checkbox"><span>在此 NAS 加密保存登录状态，用于持续归档<small>默认不保存。勾选后仅加密保存 user_id 与 token，密钥放在独立私有目录。凭据文件单独泄露不能直接读取；文件和密钥一起泄露仍有风险。</small></span></label>
+<div class="account-actions"><button id="account-submit" type="submit">登录账号</button><button id="account-cancel" type="button" class="secondary">取消并清空输入</button></div>
+</form>
+<div class="inline-note"><strong>手机号和短信验证码不会被程序保存到文件或日志</strong><p>它们只用于向厂商服务完成当次登录。浏览器不持久保存账号凭据。<span class="desktop-only">临时登录在本轮结束、退出账号、服务关闭或未运行满 15 分钟后清除。</span><span class="server-only">临时登录在退出账号、容器停止或未启用自动归档且空闲满 15 分钟后清除；容器重启需重新登录。</span>关闭网页不会停止任务或退出账号。系统内存交换、备份和厂商的数据处理不在本程序控制范围内。</p></div>
+<details class="desktop-only account-advanced"><summary>高级：临时导入已有 session.json</summary><label for="session-file">选择自己的会话文件</label><input id="session-file" type="file" accept=".json,application/json"><p class="panel-footnote">只读取 user_id 和 token，临时用于本轮。原 JSON 文件仍由你管理，通常是明文；程序不会删除它。更换会话前请先退出账号。</p></details>
+</section>
+<section class="panel desktop-only"><div class="panel-heading"><h2>原片保存位置</h2></div><form id="local-output-form"><label for="local-output-input">保存到这个文件夹</label><input id="local-output-input" type="text" required autocomplete="off"><p class="panel-footnote">默认使用“影片 / Pawzz Video”。也可填写外置磁盘的完整文件夹路径；已有录像不会随路径变更移动。</p><button id="save-output" type="submit" class="secondary">保存位置</button></form></section>
+<form id="settings-form">
+<section class="panel"><div class="panel-heading"><div><h2>设备连接</h2><p><span class="server-only">回调地址填写保存录像的 NAS 局域网地址。</span><span class="desktop-only">回调地址填写这台电脑的局域网 IPv4，不是网页的 127.0.0.1 地址。</span></p></div><span class="badge">仅可信局域网</span></div><div class="form-grid"><label>设备局域网 IP<input name="device_ip" placeholder="192.168.1.50" required></label><label><span id="callback-label">NAS 回调 IP</span><input name="callback_ip" placeholder="192.168.1.10" required></label><label>回调端口<input name="callback_port" type="number" min="1024" max="65535" required></label><label>设备序列号<input name="serial" autocomplete="off" required pattern="[A-Za-z0-9_-]{1,128}"></label></div><div class="inline-note"><strong id="session">尚未登录</strong><p>登录只准备账号凭据，不会自动开启设备维护读取。厂商会话是否仍有效，需在实际导出时确认。</p></div></section>
+<section class="panel"><div class="panel-heading"><div><h2>导出范围</h2><p>保留原文件名与日期目录，跳过已通过校验的文件。</p></div></div><div class="form-grid"><label>从哪天开始<input name="start_date" type="date"><small>留空扫描设备当前保存的全部日期。</small></label><label class="server-only">每轮完成后间隔<select name="interval"><option value="1h">1 小时</option><option value="1d">1 天</option><option value="2d">2 天</option><option value="3d">3 天</option></select></label><label class="wide">指定单个原片（高级，可留空）<input name="source" placeholder="/data_fs/record/YYYYMMDD/HHMMSS.mmm.mp4"><small>首次验收可指定一段已完成原片；留空自动发现录像。</small></label></div><div class="inline-note"><strong>原片保护规则</strong><p class="desktop-only">电脑端每次只执行一轮，由你点击“开始导出”启动。日期留空时扫描设备仍保留的录像；再次运行会跳过已经校验通过的文件。</p><p class="server-only">默认关闭自动归档；开启后立即运行，默认每轮结束后间隔 24 小时。起始日留空扫描现存全部日期，逐个传输，跳过最近约 10 分钟及仍在写入的原片。</p><p class="server-only">自动任务失败后每 10 分钟重试，最多 3 次，仍失败则等待下一常规周期。手动任务失败后不自动重试。</p><p>可用空间不足 5 GB，或本段传入后无法保留 5 GB 余量时暂停；不会自动删除已有录像。<span class="server-only">自动模式每 10 分钟检查一次并在空间恢复后尝试继续；</span>手动模式需再次点击开始。逐个传输，并跳过约 10 分钟内或仍在写入的原片。任务历史保留最近 100 轮。</p></div><label class="check"><input name="allow_maintenance" type="checkbox"><span>允许对自有设备使用维护读取通道<small>固件专用的高权限通道；停止时会尝试关闭维护访问。</small></span></label><label class="check server-only"><input name="automatic" type="checkbox"><span>启用自动归档<small>保存后立即执行一轮，之后按间隔运行；有已保存或外部会话时，服务重启后恢复；临时登录需重新登录并开启计划。</small></span></label><div class="save-row"><span id="save-hint" class="muted">修改后保存，才会对任务生效。</span><button id="save" type="submit">保存设置</button></div></section>
+</form><section class="panel"><div class="panel-heading"><div><h2>存储位置</h2><p><span class="server-only">宿主机目录在安装时设置；页面展示容器内挂载位置。</span><span class="desktop-only">这里是原片实际保存的位置，按设备日期分文件夹存放。</span></p></div></div><dl class="storage-details"><div><dt>原片输出目录</dt><dd><code id="output">/videos</code></dd></div><div><dt>目录状态</dt><dd id="storage-state">未检测</dd></div><div><dt>文件系统可用 / 总容量</dt><dd id="storage-capacity">—</dd></div></dl><p class="panel-footnote">容量是所在文件系统的空间，不是本项目已使用的录像体积。</p></section>
+</section>
+<section data-view="diagnostics" hidden><section class="panel"><div class="panel-heading"><div><h2>本地准备检查</h2><p>只检查当前运行环境，不向设备发送命令。</p></div><button id="refresh" class="secondary">刷新检查</button></div><ul class="diagnostic-list" id="diagnostic-list"></ul></section><section class="panel"><div class="panel-heading"><h2>设备联调</h2><span class="badge">尚未检测</span></div><p>设备在线状态、登录会话有效性和设备到保存端的回调连通性，需要在真实局域网中验证。这里的“管理服务已连接”仅说明网页服务可访问。</p><p class="panel-footnote">首次运行应先指定一段已完成原片，再核对原片和校验记录。</p></section></section>
+<section data-view="access" hidden><section class="panel"><div class="panel-heading"><h2>网页访问</h2><span class="badge positive">已认证</span></div><dl class="storage-details"><div><dt>当前访问地址</dt><dd id="access-address"></dd></div><div><dt>传输方式</dt><dd id="access-transport"></dd></div><div><dt>管理密钥</dt><dd>仅保留在当前页面内存中</dd></div><div><dt>页面外观</dt><dd>深浅色偏好仅保存在当前浏览器</dd></div></dl><div class="inline-note"><strong class="server-only">仅面向可信局域网</strong><strong class="desktop-only">电脑版仅在本机提供管理网页</strong><p class="server-only">HTTP 不加密。跨网络访问应使用自己管理的 HTTPS 或 VPN，不要直接暴露到公网。</p><p class="desktop-only">管理网页固定绑定 127.0.0.1；设备传输使用单独的局域网回调端口。启动时的自动连接链接只可使用一次，60 秒后失效。</p></div><div class="save-row"><p class="muted">断开页面不会停止已启用的归档任务。</p><button id="logout" class="secondary">断开管理页面</button></div></section><section class="panel"><h2>更换管理密钥</h2><p>停止服务，移除配置目录的 <code>admin-token</code> 文件后重新启动，即可生成新密钥。页面不显示或导出密钥。</p></section></section>
+</div><footer><span>Pawzz Video · 原片留在自己手里</span><span id="updated-at">数据仅在认证后加载</span></footer>
+</main></div></body></html>

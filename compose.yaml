@@ -1,0 +1,25 @@
+services:
+  pawzz-exporter:
+    build: .
+    image: pawzz-video:local
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 60s
+    environment:
+      TZ: Asia/Shanghai
+      PAWZZ_MODE: server
+      PAWZZ_CONFIG_DIR: /config
+      PAWZZ_TLS_CERT: ${PAWZZ_TLS_CERT:-}
+      PAWZZ_TLS_KEY: ${PAWZZ_TLS_KEY:-}
+      PAWZZ_WEB_PORT: ${PAWZZ_WEB_PORT:-18080}
+      PAWZZ_SESSION_KEY_FILE: /keys/session.key
+      PAWZZ_SESSION_FILE: /run/secrets/session.json
+      PAWZZ_OUTPUT_DIR: /videos
+    volumes:
+      - ${PAWZZ_KEY_DIR:-../pawzz-keys}:/keys
+      - ${PAWZZ_CONFIG_DIR:-../pawzz-data/config}:/config
+      - ${PAWZZ_SECRETS_DIR:-../pawzz-data/secrets}:/run/secrets:ro
+      - ${PAWZZ_OUTPUT_DIR:-../pawzz-data/videos}:/videos

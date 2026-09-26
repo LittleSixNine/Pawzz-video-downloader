@@ -1,0 +1,27 @@
+services:
+  pawzz-exporter:
+    build:
+      context: ..
+    command: ["python", "src/direct_exporter.py"]
+    network_mode: host
+    restart: "${PAWZZ_RESTART_POLICY:-no}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 45s
+    environment:
+      TZ: Asia/Shanghai
+      PAWZZ_ALLOW_MAINTENANCE: ${PAWZZ_ALLOW_MAINTENANCE:?explicitly set yes}
+      PAWZZ_DEVICE_IP: ${PAWZZ_DEVICE_IP:?set feeder LAN IP}
+      PAWZZ_CALLBACK_IP: ${PAWZZ_CALLBACK_IP:?set NAS LAN IP}
+      PAWZZ_CALLBACK_PORT: ${PAWZZ_CALLBACK_PORT:-10003}
+      PAWZZ_SN: ${PAWZZ_SN:?set device serial}
+      PAWZZ_SESSION_FILE: /run/secrets/pawzz_session
+      PAWZZ_OUTPUT_DIR: /videos
+      PAWZZ_INTERVAL: ${PAWZZ_INTERVAL:-1d}
+      PAWZZ_START_DATE: ${PAWZZ_START_DATE:-}
+      PAWZZ_SOURCE: ${PAWZZ_SOURCE:-}
+      PAWZZ_ONCE: ${PAWZZ_ONCE:-1}
+    volumes:
+      - ${PAWZZ_SESSION_FILE:?set local session file}:/run/secrets/pawzz_session:ro
+      - ${PAWZZ_OUTPUT_DIR:?set output folder}:/videos
