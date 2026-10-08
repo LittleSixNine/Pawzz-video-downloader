@@ -25,7 +25,7 @@ from account_login import LoginError
 
 DEFAULTS = dict(device_ip='', callback_ip='', callback_port=10003, serial='',
                 start_date='', source='', interval='1d', allow_maintenance=False,
-                automatic=False)
+                automatic=False, repair_video=False)
 FIELDS = dict(device_ip='PAWZZ_DEVICE_IP', callback_ip='PAWZZ_CALLBACK_IP',
               callback_port='PAWZZ_CALLBACK_PORT', serial='PAWZZ_SN',
               start_date='PAWZZ_START_DATE', source='PAWZZ_SOURCE', interval='PAWZZ_INTERVAL')
@@ -35,9 +35,11 @@ MAX_RETRIES = 3
 
 
 def validate(settings):
+    if isinstance(settings, dict) and 'repair_video' not in settings:
+        settings = dict(settings, repair_video=False)
     if not isinstance(settings, dict) or set(settings) != set(DEFAULTS):
         raise ValueError('设置字段不完整或含不支持的字段')
-    for name in ('allow_maintenance', 'automatic'):
+    for name in ('allow_maintenance', 'automatic', 'repair_video'):
         if type(settings[name]) is not bool:
             raise ValueError('开关值无效')
     if type(settings['callback_port']) is not int:
@@ -64,6 +66,7 @@ def environment(settings, base, allow_for_validation=False):
     env = dict(base)
     env.update({target: str(settings[name]) for name, target in FIELDS.items()})
     env['PAWZZ_ALLOW_MAINTENANCE'] = 'yes' if settings['allow_maintenance'] or allow_for_validation else 'no'
+    env['PAWZZ_REPAIR_VIDEO'] = 'yes' if settings['repair_video'] else 'no'
     env['PAWZZ_ONCE'] = '1'
     env.setdefault('PAWZZ_SESSION_FILE', '/run/secrets/session.json')
     env.setdefault('PAWZZ_OUTPUT_DIR', '/videos')
@@ -449,7 +452,8 @@ class Console:
     def watch(self, process, record):
         result = None
         # Never expose raw worker output, file names or credentials to logs/API.
-        hints = {'missing_file': '文件缺失：检查会话挂载或输出目录',
+        hints = {'repair_failed': '无损修复失败：原片已保留，请检查 FFmpeg、修复版文件及磁盘空间',
+                 'missing_file': '文件缺失：检查会话挂载或输出目录',
                  'permission_denied': '权限不足：检查会话、输出目录与 NAS ACL',
                  'timeout': '连接或回调超时：检查地址、端口、防火墙与 MQTT',
                  'io_or_network': '磁盘或网络错误：检查空间、端口冲突、DNS 和 TLS',

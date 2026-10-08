@@ -92,7 +92,7 @@ docker logs --tail 100 pawzz-once
 
 ## 保留的单次入口
 
-`deploy/compose.once.yaml` 保留旧部署方式，入口明确为 `python src/direct_exporter.py`。需要独立设置旧版环境变量：`PAWZZ_ALLOW_MAINTENANCE=yes`、`PAWZZ_DEVICE_IP`、`PAWZZ_CALLBACK_IP`、`PAWZZ_SN`、`PAWZZ_SESSION_FILE`（宿主机会话文件完整路径）、`PAWZZ_OUTPUT_DIR`（宿主机输出目录）。可选 `PAWZZ_CALLBACK_PORT`、`PAWZZ_START_DATE`、`PAWZZ_SOURCE`、`PAWZZ_INTERVAL`；默认 `PAWZZ_ONCE=1` 与重启策略 `no`。不要与网页服务同时控制设备。配置放在仓库外的私有 env 文件，再通过 `docker compose --env-file 私有文件 -f deploy/compose.once.yaml up --build` 运行。
+`deploy/compose.once.yaml` 保留旧部署方式，入口明确为 `python src/direct_exporter.py`。需要独立设置旧版环境变量：`PAWZZ_ALLOW_MAINTENANCE=yes`、`PAWZZ_DEVICE_IP`、`PAWZZ_CALLBACK_IP`、`PAWZZ_SN`、`PAWZZ_SESSION_FILE`（宿主机会话文件完整路径）、`PAWZZ_OUTPUT_DIR`（宿主机输出目录）。可选 `PAWZZ_CALLBACK_PORT`、`PAWZZ_START_DATE`、`PAWZZ_SOURCE`、`PAWZZ_INTERVAL`、`PAWZZ_REPAIR_VIDEO`（默认 `no`，设为 `yes` 另存无损修复版）；默认 `PAWZZ_ONCE=1` 与重启策略 `no`。不要与网页服务同时控制设备。配置放在仓库外的私有 env 文件，再通过 `docker compose --env-file 私有文件 -f deploy/compose.once.yaml up --build` 运行。
 
 ## 真实设备验收顺序
 

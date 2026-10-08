@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
+export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
 cd "$(dirname "$0")"
 fail() { printf '%s\n' "$1"; read -r -p '按回车关闭。' || true; exit 1; }
 python_bin=''

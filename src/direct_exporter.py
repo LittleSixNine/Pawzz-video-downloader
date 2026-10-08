@@ -11,6 +11,7 @@ import secrets
 import signal
 import shutil
 import socket
+import subprocess
 import threading
 import time
 from datetime import datetime, timedelta
@@ -21,6 +22,10 @@ from timeline_protocol import _head
 SOURCE = re.compile(r'/data_fs/record/(\d{8})/(\d{6}\.\d{3}\.mp4)')
 MD5 = re.compile(r'[0-9a-f]{32}')
 MIN_FREE_BYTES = 5 * 1024**3
+
+
+class RepairError(RuntimeError):
+    pass
 
 
 class LowStorageError(OSError):
@@ -169,11 +174,60 @@ def request(device, cfg, receiver, operation):
     receiver.wait(330)
 
 
+def repair_video(original, output):
+    target = output / 'repaired' / original.relative_to(output)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    original_md5 = digest_file(original)
+    metadata = target.with_suffix('.mp4.json')
+    if target.exists():
+        try:
+            record = json.loads(metadata.read_text())
+            if (record['original_md5'] == original_md5 and
+                    record['md5_local'] == digest_file(target) and
+                    record['bytes'] == target.stat().st_size):
+                return
+        except (OSError, ValueError, KeyError):
+            pass
+        raise RepairError('existing repaired file lacks matching verification record')
+    require_storage(target.parent, original.stat().st_size)
+    partial = target.with_suffix('.mp4.repair.part')
+    temporary = metadata.with_suffix('.json.part')
+    partial.unlink(missing_ok=True)
+    def run(arguments):
+        try:
+            return subprocess.run(['ffmpeg', '-hide_banner', '-v', 'error', '-nostdin', *arguments],
+                                  check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  timeout=300).stdout
+        except (OSError, subprocess.SubprocessError):
+            raise RepairError('lossless repair failed; original retained') from None
+    try:
+        run(['-n', '-i', str(original), '-map', '0', '-c', 'copy',
+             '-movflags', '+faststart', '-f', 'mp4', str(partial)])
+        def stream_hash(path):
+            return run(['-i', str(path), '-map', '0', '-c', 'copy',
+                        '-f', 'streamhash', '-hash', 'sha256', '-'])
+        before = stream_hash(original)
+        if not before or before != stream_hash(partial) or digest_file(original) != original_md5:
+            raise RepairError('lossless repair stream verification failed; original retained')
+        record = dict(original_md5=original_md5, md5_local=digest_file(partial),
+                      bytes=partial.stat().st_size, method='ffmpeg-streamcopy',
+                      verified_at=datetime.now().isoformat())
+        temporary.write_text(json.dumps(record, indent=2))
+        temporary.replace(metadata)
+        partial.replace(target)
+        print('verified repair:', target.relative_to(output), flush=True)
+    finally:
+        partial.unlink(missing_ok=True)
+        temporary.unlink(missing_ok=True)
+
+
 def export_one(device, cfg, source):
     match = source_path(source)
     target = cfg['output'] / match[1] / match[2]
     target.parent.mkdir(parents=True, exist_ok=True)
     if verified_existing(target, source):
+        if cfg.get('repair', False):
+            repair_video(target, cfg['output'])
         return False
     if target.exists():
         raise RuntimeError('existing file lacks matching verification record')
@@ -204,6 +258,8 @@ def export_one(device, cfg, source):
         temporary.replace(metadata)
         partial.replace(target)
         print('verified original:', target.relative_to(cfg['output']), flush=True)
+        if cfg.get('repair', False):
+            repair_video(target, cfg['output'])
         return True
     finally:
         partial.unlink(missing_ok=True)
@@ -221,6 +277,8 @@ def retry_read(operation):
 
 
 def export_cycle(cfg):
+    if cfg.get('repair', False) and not shutil.which('ffmpeg'):
+        raise RepairError('FFmpeg required for lossless repair')
     user, token = read_session(cfg['session'])
     cfg['output'].mkdir(parents=True, exist_ok=True)
     require_storage(cfg['output'])
@@ -276,11 +334,14 @@ def config(env=None):
                 serial=env['PAWZZ_SN'], session=int(env['PAWZZ_SESSION_FD']) if env.get('PAWZZ_SESSION_FD') else Path(env['PAWZZ_SESSION_FILE']),
                 output=Path(env.get('PAWZZ_OUTPUT_DIR', '/videos')),
                 interval=INTERVALS[env.get('PAWZZ_INTERVAL', '1d')],
-                once=env.get('PAWZZ_ONCE', '0') == '1', source=source, start=start)
+                once=env.get('PAWZZ_ONCE', '0') == '1', source=source, start=start,
+                repair=env.get('PAWZZ_REPAIR_VIDEO', 'no') == 'yes')
 
 
 def failure_hint(error):
     # Fixed messages keep session values and private paths out of container logs.
+    if isinstance(error, RepairError):
+        return 'repair_failed: check FFmpeg and repaired files; originals retained'
     if isinstance(error, AuthenticationError):
         return 'authentication: sign in again'
     if isinstance(error, FileNotFoundError):

@@ -22,6 +22,7 @@ services:
       PAWZZ_START_DATE: ${PAWZZ_START_DATE:-}
       PAWZZ_SOURCE: ${PAWZZ_SOURCE:-}
       PAWZZ_ONCE: ${PAWZZ_ONCE:-1}
+      PAWZZ_REPAIR_VIDEO: ${PAWZZ_REPAIR_VIDEO:-no}
     volumes:
       - ${PAWZZ_SESSION_FILE:?set local session file}:/run/secrets/pawzz_session:ro
       - ${PAWZZ_OUTPUT_DIR:?set output folder}:/videos
