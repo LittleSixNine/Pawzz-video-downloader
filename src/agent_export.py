@@ -61,15 +61,15 @@ def browser_export(args):
                               action='在本机网页登录，再点击开始导出；不向 Agent 提供手机号或验证码'), ensure_ascii=False), flush=True)
         # Only the browser receives this short-lived code. It is never printed.
         webbrowser.open(address + '#connect=' + console.new_connect_code())
-        deadline = time.monotonic() + 900
         while not console.closed.wait(.2):
             state = console.snapshot()
             new_job = next((row for row in state['history'] if row['id'] not in previous_ids), None)
             if new_job and not state['running']:
-                return (0, dict(status='success', new_files=new_job['new_files'])) if new_job['state'] == 'success' else (
-                    new_job.get('exit_code') or 1, dict(status=new_job['state'], new_files=None))
-            if not new_job and time.monotonic() >= deadline:
-                return 2, dict(status='not_ready', reason='browser_login_or_start_timeout')
+                print(json.dumps(dict(status=new_job['state'],
+                                      new_files=new_job['new_files'] if new_job['state'] == 'success' else None,
+                                      page_kept_open=True), ensure_ascii=False), flush=True)
+                previous_ids.add(new_job['id'])
+        return 0, dict(status='closed', new_files=None)
     finally:
         console.close()
         if server:

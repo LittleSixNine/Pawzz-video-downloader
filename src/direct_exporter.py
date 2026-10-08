@@ -165,11 +165,8 @@ def request(device, cfg, receiver, operation):
     base = f"http://{cfg['advertise']}:{cfg['port']}/{receiver.key}"
     curl = "/oem/tool/curl --noproxy '*' -fsS --connect-timeout 10 --max-time 300"
     script = operation(base, curl)
-    try:
-        publish(device, 'enable_remote_telnet', {'svr_ip': f"{cfg['advertise']} & {{ {script}; }}"})
-        receiver.wait(330)
-    finally:
-        publish(device, 'disenable_remote_telnet', {})
+    publish(device, 'enable_remote_telnet', {'svr_ip': f"{cfg['advertise']} & {{ {script}; }}"})
+    receiver.wait(330)
 
 
 def export_one(device, cfg, source):
@@ -212,32 +209,48 @@ def export_one(device, cfg, source):
         partial.unlink(missing_ok=True)
 
 
+def retry_read(operation):
+    for attempt in range(4):
+        try:
+            return operation()
+        except TimeoutError:
+            if attempt == 3:
+                raise
+            print(f'read retry: {attempt + 1}/3', flush=True)
+            time.sleep(5)
+
+
 def export_cycle(cfg):
     user, token = read_session(cfg['session'])
     cfg['output'].mkdir(parents=True, exist_ok=True)
     require_storage(cfg['output'])
     count = 0
     with DeviceClient(user, cfg['serial'], token) as device:
-        if cfg['source']:
-            candidates = [cfg['source']]
-        else:
-            with Receiver(cfg['device'], cfg['bind'], cfg['port']) as receiver:
-                def operation(base, curl):
-                    # A sentinel distinguishes an empty directory from no response.
-                    return ("{ printf 'CATALOG\\n'; find /data_fs/record -type f -name '*.mp4'; } | "
-                            f'{curl} --data-binary @- {base}/file')
-                request(device, cfg, receiver, operation)
-                lines = receiver.data.decode().splitlines()
-                if not lines or lines[0] != 'CATALOG':
-                    raise ValueError('invalid catalog')
-                candidates = sorted(set(lines[1:]))
-        cutoff = datetime.now() - timedelta(minutes=10)
-        for source in candidates:
-            match = source_path(source)
-            timestamp = datetime.strptime(match[1] + match[2][:6], '%Y%m%d%H%M%S')
-            if timestamp > cutoff or (cfg['start'] and match[1] < cfg['start']):
-                continue
-            count += int(export_one(device, cfg, source))
+        try:
+            if cfg['source']:
+                candidates = [cfg['source']]
+            else:
+                def discover():
+                    with Receiver(cfg['device'], cfg['bind'], cfg['port']) as receiver:
+                        def operation(base, curl):
+                            # A sentinel distinguishes an empty directory from no response.
+                            return ("{ printf 'CATALOG\\n'; find /data_fs/record -type f -name '*.mp4'; } | "
+                                    f'{curl} --data-binary @- {base}/file')
+                        request(device, cfg, receiver, operation)
+                        lines = receiver.data.decode().splitlines()
+                        if not lines or lines[0] != 'CATALOG':
+                            raise ValueError('invalid catalog')
+                        return sorted(set(lines[1:]))
+                candidates = retry_read(discover)
+            cutoff = datetime.now() - timedelta(minutes=10)
+            for source in candidates:
+                match = source_path(source)
+                timestamp = datetime.strptime(match[1] + match[2][:6], '%Y%m%d%H%M%S')
+                if timestamp > cutoff or (cfg['start'] and match[1] < cfg['start']):
+                    continue
+                count += int(retry_read(lambda: export_one(device, cfg, source)))
+        finally:
+            publish(device, 'disenable_remote_telnet', {})
     return count
 
 

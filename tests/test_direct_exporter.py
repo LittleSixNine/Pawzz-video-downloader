@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError
 from types import SimpleNamespace
 
-from direct_exporter import export_cycle, export_one, source_path, verified_existing, LowStorageError, MIN_FREE_BYTES
+from direct_exporter import request, retry_read, export_cycle, export_one, source_path, verified_existing, LowStorageError, MIN_FREE_BYTES
 
 SOURCE = '/data_fs/record/20000101/010203.456.mp4'
 
@@ -118,6 +118,7 @@ class OriginalExportTests(unittest.TestCase):
 
         with patch('direct_exporter.read_session', return_value=('test-user', 'test-token')), \
              patch('direct_exporter.DeviceClient', FakeDevice), \
+             patch('direct_exporter.publish'), \
              patch('direct_exporter.Receiver', FakeReceiver), \
              patch('direct_exporter.request', side_effect=respond), \
              patch('direct_exporter.export_one',
@@ -131,5 +132,88 @@ class OriginalExportTests(unittest.TestCase):
         self.assertEqual(count, 2)
         self.assertCountEqual(exported, finished)
 
+
+
+class RetryTests(unittest.TestCase):
+    transfer = OriginalExportTests.transfer
+    def test_timeout_retry_keeps_device_and_cleans_partial(self):
+        data=b'verified retry original'; digest=hashlib.md5(data).hexdigest()
+        with tempfile.TemporaryDirectory() as folder:
+            cfg=dict(output=Path(folder),session=Path('unused'),serial='test',source=SOURCE,
+                     start='',device='127.0.0.1',bind='127.0.0.1',port=0)
+            attempts=[]
+            def respond(device,cfg,receiver,operation):
+                attempts.append(receiver.key)
+                if len(attempts)==1:
+                    receiver.destination.write_bytes(b'incomplete')
+                    raise TimeoutError()
+                self.transfer(receiver,data,digest)
+            with patch('direct_exporter.read_session',return_value=('test','test')), \
+                 patch('direct_exporter.DeviceClient') as client, \
+                 patch('direct_exporter.request',side_effect=respond), \
+                 patch('direct_exporter.publish') as close, patch('direct_exporter.time.sleep') as sleep:
+                self.assertEqual(export_cycle(cfg),1)
+                self.assertEqual(client.call_count,1)
+                self.assertEqual(len(set(attempts)),2)
+                sleep.assert_called_once_with(5)
+                close.assert_called_once_with(client.return_value.__enter__.return_value,'disenable_remote_telnet',{})
+            target=Path(folder)/'20000101/010203.456.mp4'
+            self.assertTrue(verified_existing(target,SOURCE))
+            self.assertEqual(list(Path(folder).rglob('*.part')),[])
+
+    def test_request_timeout_does_not_close_channel(self):
+        from unittest.mock import Mock
+        receiver=Mock(key='test'); receiver.wait.side_effect=TimeoutError()
+        with patch('direct_exporter.publish') as publish:
+            with self.assertRaises(TimeoutError):
+                request(Mock(user_id='test'),{'advertise':'192.168.1.2','port':10003},receiver,lambda b,c:'true')
+        self.assertEqual([call.args[1] for call in publish.call_args_list],['enable_remote_telnet'])
+
+    def test_failed_and_stopped_batch_closes_channel_once(self):
+        cases=[([TimeoutError()]*4,TimeoutError,4),([KeyboardInterrupt()],KeyboardInterrupt,1),
+               ([ValueError('checksum mismatch')],ValueError,1),([LowStorageError()],LowStorageError,1)]
+        for outcomes,error,attempts in cases:
+            with self.subTest(error=error),tempfile.TemporaryDirectory() as folder:
+                cfg=dict(output=Path(folder),session=Path('unused'),serial='test',source=SOURCE,
+                         start='',device='127.0.0.1',bind='127.0.0.1',port=0)
+                with patch('direct_exporter.read_session',return_value=('test','test')), \
+                     patch('direct_exporter.DeviceClient'),patch('direct_exporter.export_one',side_effect=outcomes) as export, \
+                     patch('direct_exporter.publish') as close,patch('direct_exporter.time.sleep'):
+                    with self.assertRaises(error):export_cycle(cfg)
+                    self.assertEqual(export.call_count,attempts)
+                    self.assertEqual(close.call_count,1)
+                    self.assertEqual(close.call_args.args[1],'disenable_remote_telnet')
+
+    def test_catalog_timeout_retries_with_fresh_receiver(self):
+        from unittest.mock import MagicMock
+        first,second=MagicMock(),MagicMock()
+        second.__enter__.return_value.data=('CATALOG\n'+SOURCE+'\n').encode()
+        with tempfile.TemporaryDirectory() as folder:
+            cfg=dict(output=Path(folder),session=Path('unused'),serial='test',source='',
+                     start='',device='127.0.0.1',bind='127.0.0.1',port=0)
+            with patch('direct_exporter.read_session',return_value=('test','test')), \
+                 patch('direct_exporter.DeviceClient'),patch('direct_exporter.Receiver',side_effect=[first,second]) as receivers, \
+                 patch('direct_exporter.request',side_effect=[TimeoutError(),None]) as requests, \
+                 patch('direct_exporter.export_one',return_value=True) as export, \
+                 patch('direct_exporter.publish') as close,patch('direct_exporter.time.sleep'):
+                self.assertEqual(export_cycle(cfg),1)
+                self.assertEqual(receivers.call_count,2)
+                self.assertEqual(requests.call_count,2)
+                export.assert_called_once()
+                self.assertEqual(close.call_count,1)
+
+    def test_retry_limit_and_non_timeout_fail_closed(self):
+        from unittest.mock import Mock
+        operation=Mock(side_effect=TimeoutError())
+        with patch('direct_exporter.time.sleep') as sleep:
+            with self.assertRaises(TimeoutError):retry_read(operation)
+            self.assertEqual(operation.call_count,4)
+            self.assertEqual(sleep.call_count,3)
+        for error in (ValueError('checksum mismatch'),LowStorageError(),KeyboardInterrupt()):
+            operation=Mock(side_effect=error)
+            with patch('direct_exporter.time.sleep') as sleep:
+                with self.assertRaises(type(error)):retry_read(operation)
+                self.assertEqual(operation.call_count,1)
+                sleep.assert_not_called()
 
 if __name__=='__main__':unittest.main()

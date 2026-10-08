@@ -149,7 +149,7 @@ function paint(data, fields = false) {
   $('account-signed-in').hidden = !data.session_ready && !account.saved && !account.logout_pending && !account.source;
   $('account-detail').textContent = account.logout_pending ? '正在等待任务停止，完成后清除进程中的登录凭据。' : account.source === 'saved' ? 'NAS 已加密保存 user_id 和 token，解密密钥位于独立目录；手机号和验证码未写入文件。文件与密钥不可一起分享。' : account.source === 'external' ? '正在使用你提供的明文会话文件。退出会停用该文件，但不会删除宿主机原件。' : account.source === 'temporary' ? '登录凭据仅在当前服务内存中使用，程序未将它们保存到文件。' : '保存的登录状态无法使用，请退出后重新登录。';
   if (previousAccount && previousAccount.code_pending && !account.code_pending) $('account-form').reset();
-  if (wasRunning && !data.running) message(data.last_result + (data.mode === 'desktop' && previousAccount.source === 'temporary' ? '。临时登录已清除，下次导出请重新登录。' : ''), data.last_exit !== 0);
+  if (wasRunning && !data.running) message(data.last_result + (previousAccount.source === 'temporary' && !account.source ? '。临时登录已清除，下次导出请重新登录。' : ''), data.last_exit !== 0);
   const settings = data.settings, history = data.history || [], latest = history[0], storage = data.storage;
   $('connection').textContent = '管理服务已连接'; $('service-dot').classList.add('online');
   const lastSuccess = history.find(row => row.state === 'success');
@@ -278,7 +278,7 @@ $('session-file').addEventListener('change', async event => {
     if (file.size > 8192) throw new Error('会话文件过大，请选择只包含 user_id 和 token 的 JSON 文件。');
     if (lastData.session_ready) throw new Error('请先退出当前账号。');
     const session = JSON.parse(await file.text());
-    await localSetup({session}, '会话已临时载入内存，原文件未修改；本轮结束后清除临时凭据。');
+    await localSetup({session}, '会话已临时载入内存，原文件未修改；退出账号或关闭服务时清除临时凭据。');
   } catch (error) { message(error instanceof SyntaxError ? '这不是有效的 JSON 会话文件。' : error.message, true); }
   finally { event.target.value = ''; }
 });

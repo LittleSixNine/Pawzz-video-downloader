@@ -76,7 +76,7 @@ class LoginConsoleTests(unittest.TestCase):
             self.assertEqual(self.request('/api/account/send', {'phone': '13900000000'})[0], 200)
             return self.request('/api/account/login', {'phone': '13900000000', 'code': '123456', 'remember': remember})
 
-    def test_temporary_login_never_persists_and_expires_without_fallback(self):
+    def test_temporary_login_never_persists_and_survives_idle_without_fallback(self):
         self.assertEqual(self.login()[0], 200)
         snapshot = self.console.snapshot()
         self.assertTrue(snapshot['session_ready'])
@@ -89,8 +89,8 @@ class LoginConsoleTests(unittest.TestCase):
                 self.assertNotIn('13900000000', path.read_text())
                 self.assertNotIn('123456', path.read_text())
         self.session.write_text('{"user_id":"old", "token":"OLD_SYNTHETIC"}')
-        self.console.account_deadline = 0
-        self.assertFalse(self.console.snapshot()['session_ready'])
+        with patch('web_settings.time.monotonic', return_value=time.monotonic()+3600):
+            self.assertTrue(self.console.snapshot()['session_ready'])
         self.console.close()
         from web_settings import Console
         self.console = Console(self.root / 'config', self.env)
@@ -202,10 +202,9 @@ class LoginConsoleTests(unittest.TestCase):
             self.console.save(dict(VALID, automatic=True))
         self.console.install_session({'user_id': 'demo', 'token': 'SYNTHETIC_ONLY'}, False)
         self.console.settings = dict(VALID, automatic=True)
-        self.console.account_deadline = 0
         self.assertTrue(self.console.snapshot()['session_ready'])
         self.console.stop()
-        self.assertGreater(self.console.account_deadline, time.monotonic())
+        self.assertTrue(self.console.snapshot()['session_ready'])
         self.console.settings['automatic'] = True
         from types import SimpleNamespace
         self.console.watch(SimpleNamespace(stdout=io.StringIO(''), wait=lambda: 4), dict(new_files=0))
@@ -244,7 +243,7 @@ class LoginConsoleTests(unittest.TestCase):
         with self.assertRaises(account_login.LoginError):
             credential_store.key_location(str(self.root / 'config/key'), self.root / 'config')
 
-    def test_real_child_receives_pipe_not_credential_arguments_then_desktop_clears(self):
+    def test_real_child_receives_pipe_not_credential_arguments_then_desktop_retains(self):
         self.assertEqual(self.login()[0], 200)
         self.console.save(VALID)
         real_spawn = subprocess.Popen
@@ -258,8 +257,21 @@ class LoginConsoleTests(unittest.TestCase):
         self.console.monitor.join(8)
         self.assertEqual(self.console.last_exit, 0)
         self.assertEqual(self.console.history[0]['new_files'], 2)
-        self.assertIsNone(self.console.account_session)
-        self.assertFalse(self.console.snapshot()['session_ready'])
+        self.assertIsNotNone(self.console.account_session)
+        self.assertTrue(self.console.snapshot()['session_ready'])
+
+
+    def test_tasks_retain_temporary_login_in_desktop_and_server(self):
+        from types import SimpleNamespace
+        for mode in ('desktop','server'):
+            for code in (0,1,130):
+                with self.subTest(mode=mode,code=code):
+                    self.console.mode=mode
+                    self.console.install_session({'user_id':'demo','token':'SYNTHETIC_RETRY'},False)
+                    self.console.watch(SimpleNamespace(stdout=io.StringIO(''),wait=lambda:code),dict(new_files=0))
+                    self.assertTrue(self.console.snapshot()['session_ready'])
+                    self.assertIsNotNone(self.console.account_session)
+                    self.assertFalse(self.console.account_file.exists())
 
     def test_logout_stops_child_before_reporting_credentials_cleared(self):
         self.assertEqual(self.login()[0], 200)

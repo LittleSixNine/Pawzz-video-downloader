@@ -69,6 +69,14 @@ class AgentExportTests(unittest.TestCase):
                 self.assertFalse(console.snapshot()['running'])
                 console.install_session({'user_id': 'demo', 'token': 'SYNTHETIC_WEB_AGENT'}, False)
                 console.start()  # Simulate the user's distinct Start click.
+                snapshot = console.snapshot
+                def completed_then_user_closes():
+                    state = snapshot()
+                    if state['last_exit'] == 0 and not state['running']:
+                        self.assertTrue(state['session_ready'])
+                        console.closed.set()  # Simulate closing the service after seeing success.
+                    return state
+                console.snapshot = completed_then_user_closes
             def child(args, **kwargs):
                 code = "import os; from synology_exporter import read_session; assert read_session(int(os.environ['PAWZZ_SESSION_FD'])) == ('demo','SYNTHETIC_WEB_AGENT'); print('cycle complete: 2 original files')"
                 return actual_spawn([sys.executable, '-c', code], **kwargs)
@@ -77,12 +85,34 @@ class AgentExportTests(unittest.TestCase):
                 self.assertEqual(agent_export.main(['run', *args, '--allow-maintenance']), 0)
             lines = [json.loads(line) for line in output.getvalue().splitlines()]
             self.assertEqual(lines[0]['status'], 'awaiting_user')
-            self.assertEqual(lines[-1], {'status': 'success', 'new_files': 2})
+            self.assertEqual(lines[-2], {'status': 'success', 'new_files': 2, 'page_kept_open': True})
+            self.assertEqual(lines[-1], {'status': 'closed', 'new_files': None})
             self.assertNotIn('SYNTHETIC_WEB_AGENT', output.getvalue())
             self.assertIsNone(consoles[0].account_session)
             for path in root.rglob('*'):
                 if path.is_file():
                     self.assertNotIn('SYNTHETIC_WEB_AGENT', path.read_text())
+
+
+class BrowserLifetimeTests(unittest.TestCase):
+    def test_job_failure_keeps_page_alive_without_reopening_browser(self):
+        from unittest.mock import MagicMock
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as folder:
+            settings=Path(folder)/'settings.json'
+            settings.write_text(json.dumps(dict(device_ip='192.168.1.2',callback_ip='192.168.1.3',serial='DEMO')))
+            console=MagicMock(); console.history=[]
+            console.closed.wait.side_effect=[False,False,True]
+            console.snapshot.return_value={'running':False,'history':[dict(id='test',state='failed',new_files=2)]}
+            server=MagicMock();server.server_port=10004
+            with patch('agent_export.Console',return_value=console),patch('agent_export.make_server',return_value=server), \
+                 patch('agent_export.threading.Thread'),patch('agent_export.webbrowser.open') as opened, \
+                 contextlib.redirect_stdout(io.StringIO()) as out:
+                result=agent_export.browser_export(SimpleNamespace(settings=settings,output=Path(folder)/'videos'))
+            self.assertEqual(console.closed.wait.call_count,3)
+            self.assertEqual(opened.call_count,1)
+            self.assertEqual(out.getvalue().count('page_kept_open'),1)
+            self.assertEqual(result[1]['status'],'closed')
 
 
 if __name__ == '__main__':

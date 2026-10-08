@@ -119,7 +119,6 @@ class Console:
         self.process = None
         self.account_session = None
         self.account_source = None
-        self.account_deadline = 0
         self.account_problem = None
         self.logout_pending = False
         self.sms_phone = None
@@ -208,8 +207,7 @@ class Console:
                         account=dict(source=self.account_source or ('external' if self.session_ready() else None),
                                      saved=self.account_file.exists(), logout_pending=self.logout_pending,
                                      external_present=session.is_file(),
-                                     temporary_seconds=max(0, int(self.account_deadline - time.monotonic()))
-                                     if self.account_source == 'temporary' else None,
+                                     temporary_seconds=None,
                                      sms_wait=max(0, int(self.sms_next - time.monotonic()) + 1),
                                      code_pending=self.sms_phone is not None),
                         problem=self.account_problem or self.problem or self.history_problem, output=str(output),
@@ -265,9 +263,6 @@ class Console:
         now = time.monotonic()
         if self.sms_phone and now >= self.sms_deadline:
             self.sms_phone = None
-        if (self.account_source == 'temporary' and self.process is None and
-                not self.settings['automatic'] and now >= self.account_deadline):
-            self.account_session = self.account_source = None
 
     def install_session(self, value, remember):
         if self.process is not None or self.logout_pending:
@@ -283,7 +278,6 @@ class Console:
             credential_store.save(self.account_file, self.account_key, value)
         self.account_session = value
         self.account_source = 'saved' if remember else 'temporary'
-        self.account_deadline = time.monotonic() + 900
         self.account_problem = None
         self.sms_phone = None
 
@@ -493,11 +487,9 @@ class Console:
                 self.problem = self.last_result
             record.update(finished_at=self.last_finished, exit_code=code, result=self.last_result,
                           state='success' if code == 0 else 'paused' if code == 3 else 'stopped' if code in (130, -15) else 'failed')
-            if self.logout_pending or self.mode == 'desktop':
+            if self.logout_pending or code == 4:
                 self.account_session = self.account_source = None
                 self.logout_pending = False
-            elif self.account_source == 'temporary':
-                self.account_deadline = time.monotonic() + 900
             self.persist_history()
             self.schedule_next(failed=record['state'] == 'failed', low_storage=code == 3)
 
@@ -511,8 +503,6 @@ class Console:
             self.next_run = None
             self.next_kind = None
             self.retry_count = 0
-            if self.account_source == 'temporary' and self.process is None:
-                self.account_deadline = time.monotonic() + 900
             if self.process is not None:
                 try:
                     self.process.terminate()
