@@ -28,6 +28,8 @@ class WebSettingsTests(unittest.TestCase):
         self.session = self.root / 'session.json'
         self.env = dict(os.environ, PAWZZ_SESSION_KEY_FILE=str(self.root / 'keys/session.key'), PAWZZ_SESSION_FILE=str(self.session),
                         PAWZZ_OUTPUT_DIR=str(self.root / 'videos'), PAWZZ_MODE=getattr(self, 'mode', 'server'))
+        (self.root / 'config').mkdir()
+        (self.root / 'config/admin-token').write_text('SYNTHETIC_MANAGEMENT_PASSWORD_FOR_TEST')
         self.console = Console(self.root / 'config', self.env)
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), handler_for(self.console))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

@@ -28,7 +28,7 @@ from timeline_protocol import (
 
 HOST = "iot.papahuoban.cn"
 PORT = 1883
-INTERVALS = {"1h": 3600, "1d": 86400, "2d": 172800, "3d": 259200}
+INTERVALS = {"1h": 3600, "3h": 10800, "6h": 21600, "12h": 43200, "1d": 86400, "2d": 172800, "3d": 259200}
 
 
 class AuthenticationError(RuntimeError):

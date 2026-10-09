@@ -53,7 +53,7 @@ def main(argv=None):
             server = make_server(console, '127.0.0.1', 0)
         address = f'http://127.0.0.1:{server.server_port}/'
         print(f'Pawzz Video 电脑版已启动：{address}', flush=True)
-        print(f'管理密钥文件：{folder / "admin-token"}', flush=True)
+        print(f'管理密码文件（首次安装默认 admin，可在设置修改）：{folder / "admin-token"}', flush=True)
         print('导出时请保持本窗口开启、电脑唤醒。按 Control-C 安全停止。', flush=True)
         if not args.no_browser:
             # The one-use code never goes into HTTP URLs or logs; the page clears it immediately.

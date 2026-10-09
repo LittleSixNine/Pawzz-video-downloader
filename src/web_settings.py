@@ -1,6 +1,8 @@
 """Small authenticated LAN console; export work stays in a separate process."""
 from __future__ import annotations
 import ipaddress
+import base64
+import stat
 import json
 import os
 from pathlib import Path
@@ -85,6 +87,31 @@ def save_json(path, value):
         temp.unlink(missing_ok=True)
 
 
+def directory_status(path):
+    result = dict(state='missing', available=False, writable=False, free=None, total=None,
+                  owner=None, message='目录不存在，请检查 NAS 路径与容器挂载')
+    try:
+        info = path.stat()
+        result['owner'] = info.st_uid
+        if not stat.S_ISDIR(info.st_mode):
+            result.update(state='not_directory', message='挂载位置不是目录，请检查挂载配置')
+        elif not os.access(path, os.R_OK | os.X_OK):
+            result.update(state='inaccessible', message='无法进入或读取目录，请检查运行用户和目录权限')
+        else:
+            usage = shutil.disk_usage(path)
+            writable = os.access(path, os.W_OK | os.X_OK)
+            result.update(state='ready' if writable else 'not_writable', available=True,
+                          writable=writable, free=usage.free, total=usage.total,
+                          message='目录可访问，写权限初检通过' if writable else '目录可访问，但没有写入权限')
+    except FileNotFoundError:
+        pass
+    except PermissionError:
+        result.update(state='inaccessible', message='无法访问目录，请检查运行用户和目录权限')
+    except OSError:
+        result.update(state='io_error', message='无法读取目录或容量信息，请检查挂载与磁盘状态')
+    return result
+
+
 class Console:
     def __init__(self, folder, base_env=None):
         self.folder = folder
@@ -113,16 +140,24 @@ class Console:
             self.settings['automatic'] = False
         token_path = folder / 'admin-token'
         if not token_path.exists():
-            with token_path.open('x') as stream:
-                os.chmod(token_path, 0o600)
-                stream.write(secrets.token_urlsafe(32))
-        self.token = token_path.read_text().strip()
-        if len(self.token) < 32 or not self.token.isascii():
-            raise ValueError('admin-token must contain at least 32 ASCII characters')
+            save_json(token_path, {'password': 'admin'})
+        raw = token_path.read_text()
+        try:
+            saved_password = json.loads(raw)
+        except ValueError:
+            saved_password = None
+        if isinstance(saved_password, dict) and set(saved_password) == {'password'}:
+            self.token = saved_password['password']
+        else:
+            self.token = raw.strip()
+        if not isinstance(self.token, str) or not self.token:
+            raise ValueError('管理密码不能为空')
         self.process = None
         self.account_session = None
         self.account_source = None
         self.account_problem = None
+        self.account_save_problem = None
+        self.write_check = None
         self.logout_pending = False
         self.sms_phone = None
         self.sms_deadline = 0
@@ -132,10 +167,11 @@ class Console:
         self.external_disabled = (folder / 'account-disabled').exists()
         self.account_file = folder / 'login' / 'session.enc'
         self.account_key = credential_store.key_location(self.env.get('PAWZZ_SESSION_KEY_FILE', '/keys/session.key'), folder)
-        if self.mode == 'server' and self.account_file.exists():
+        if self.mode == 'server':
             try:
-                self.account_session = credential_store.load(self.account_file, self.account_key)
-                self.account_source = 'saved'
+                if self.account_file.exists():
+                    self.account_session = credential_store.load(self.account_file, self.account_key)
+                    self.account_source = 'saved'
             except (ValueError, OSError):
                 self.account_problem = '保存的登录状态无法解密，请检查独立密钥；或退出账号后重新登录'
         self.last_exit = None
@@ -190,14 +226,20 @@ class Console:
             self.expire_account()
             session = Path(self.env.get('PAWZZ_SESSION_FILE', '/run/secrets/session.json'))
             output = Path(self.env.get('PAWZZ_OUTPUT_DIR', '/videos'))
-            storage = dict(available=False, writable=False, free=None, total=None)
+            storage = directory_status(output)
+            if storage['state'] != 'ready' and self.write_check and self.write_check['passed']:
+                self.write_check = None
+            storage['write_check'] = self.write_check
             try:
-                if output.is_dir():
-                    usage = shutil.disk_usage(output)
-                    storage.update(available=True, writable=os.access(output, os.W_OK),
-                                   free=usage.free, total=usage.total)
+                saved_account = self.account_file.exists()
             except OSError:
-                pass
+                saved_account = False
+            permissions = dict(uid=os.geteuid(), gid=os.getegid(), directories=[])
+            for name, directory in (('配置目录', self.folder), ('密钥目录', self.account_key.parent)):
+                check = directory_status(directory)
+                if check['owner'] is not None and check['owner'] != os.geteuid():
+                    check.update(state='owner_mismatch', message='目录所有者与运行用户不一致，请核对专用账号和目录所有者')
+                permissions['directories'].append(dict(name=name, **check))
             try:
                 validate(self.settings)
                 configured = True
@@ -208,17 +250,54 @@ class Console:
                         last_finished=self.last_finished, next_run=self.next_run,
                         session_ready=self.session_ready(),
                         account=dict(source=self.account_source or ('external' if self.session_ready() else None),
-                                     saved=self.account_file.exists(), logout_pending=self.logout_pending,
+                                     saved=saved_account, logout_pending=self.logout_pending,
+                                     save_problem=self.account_save_problem,
                                      external_present=session.is_file(),
                                      temporary_seconds=None,
                                      sms_wait=max(0, int(self.sms_next - time.monotonic()) + 1),
                                      code_pending=self.sms_phone is not None),
                         problem=self.account_problem or self.problem or self.history_problem, output=str(output),
                         configured=configured, storage=storage, history_valid=self.history_valid,
+                        permissions=permissions, default_password=self.token == 'admin',
                         next_kind=self.next_kind, retry_count=self.retry_count,
                         policy=dict(retry_seconds=RETRY_DELAY, max_retries=MAX_RETRIES,
                                     min_free_bytes=MIN_FREE_BYTES),
                         history=[record.copy() for record in self.history])
+
+    def change_password(self, body):
+        with self.lock:
+            if not isinstance(body, dict) or set(body) != {'current', 'password', 'confirm'}:
+                raise LoginError('修改密码请求格式无效')
+            if not isinstance(body['current'], str) or not secrets.compare_digest(body['current'].encode(), self.token.encode()):
+                raise LoginError('当前管理密码不正确')
+            password = body['password']
+            if not isinstance(password, str) or not password:
+                raise LoginError('新管理密码不能为空')
+            if password != body['confirm']:
+                raise LoginError('两次输入的新密码不一致')
+            with credential_store.file_access('admin_password', '管理密码保存失败，请检查配置目录写权限；原密码仍有效'):
+                save_json(self.folder / 'admin-token', {'password': password})
+            self.token = password
+
+    def check_storage(self, body):
+        with self.lock:
+            if body != {}:
+                raise LoginError('写入检查请求格式无效')
+            if self.process is not None:
+                raise RuntimeError('请先等待任务结束')
+            output = Path(self.env.get('PAWZZ_OUTPUT_DIR', '/videos'))
+            try:
+                with credential_store.file_access('output_write_check', '输出目录写入或清理检查失败，请检查挂载、权限与磁盘空间'):
+                    with tempfile.NamedTemporaryFile(prefix='.pawzz-write-check-', dir=output, mode='w+b') as stream:
+                        stream.write(b'Pawzz storage check')
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                        stream.seek(0)
+                        if stream.read() != b'Pawzz storage check':
+                            raise OSError('write verification failed')
+                self.write_check = dict(passed=True, message='临时文件写入、读取和删除检查通过')
+            except LoginError as error:
+                self.write_check = dict(passed=False, message=str(error))
 
     def new_connect_code(self):
         with self.lock:
@@ -251,6 +330,7 @@ class Console:
                     raise OSError('Output is not writable')
                 save_json(self.folder / 'local.json', {'output_dir': str(output)})
                 self.env['PAWZZ_OUTPUT_DIR'] = str(output)
+                self.write_check = None
             elif set(body) == {'session'}:
                 self.install_session(account_login.credentials(body['session']), False)
             else:
@@ -270,19 +350,43 @@ class Console:
     def install_session(self, value, remember):
         if self.process is not None or self.logout_pending:
             raise RuntimeError('请先停止任务')
-        if self.account_file.exists():
-            raise LoginError('请先退出已保存的账号，再更换登录方式')
+        existing_problem = None
+        try:
+            if self.account_file.exists():
+                raise LoginError('请先退出已保存的账号，再更换登录方式')
+        except OSError:
+            existing_problem = '登录目录无法访问，无法确认或保存已有登录文件；当前登录仅在内存中保留'
+        if remember and self.mode != 'server':
+            raise LoginError('电脑版不保存登录凭据')
+        self.account_session = account_login.credentials(value)
+        self.account_source = 'temporary'
+        self.account_problem = self.account_save_problem = self.sms_phone = None
         # This marker contains no credential; it prevents fallback to an old mounted account.
-        save_json(self.folder / 'account-disabled', True)
         self.external_disabled = True
-        if remember:
-            if self.mode != 'server':
-                raise LoginError('电脑版不保存登录凭据')
-            credential_store.save(self.account_file, self.account_key, value)
-        self.account_session = value
-        self.account_source = 'saved' if remember else 'temporary'
-        self.account_problem = None
-        self.sms_phone = None
+        if existing_problem:
+            self.account_save_problem = existing_problem
+            return
+        try:
+            if remember:
+                self.save_account()
+            else:
+                with credential_store.file_access('account_marker', '配置目录不可写，无法保存旧会话停用标记'):
+                    save_json(self.folder / 'account-disabled', True)
+        except LoginError as error:
+            self.account_save_problem = str(error)
+
+    def save_account(self):
+        if self.mode != 'server' or self.account_session is None or self.account_source != 'temporary':
+            raise LoginError('仅 NAS 的当前临时登录可以加密保存')
+        try:
+            with credential_store.file_access('account_marker', '配置目录不可写，无法保存旧会话停用标记'):
+                save_json(self.folder / 'account-disabled', True)
+            with credential_store.file_access('session_save', '登录状态未能加密保存，请检查配置与密钥目录权限'):
+                credential_store.save(self.account_file, self.account_key, self.account_session)
+            self.account_source = 'saved'
+            self.account_save_problem = None
+        except LoginError as error:
+            self.account_save_problem = str(error)
 
     def account_action(self, action, body):
         # ponytail: one account per console; short vendor calls share the existing lock.
@@ -297,12 +401,18 @@ class Console:
                 self.account_file.unlink(missing_ok=True)
                 self.sms_phone = None
                 self.account_problem = None
+                self.account_save_problem = None
                 self.logout_pending = self.process is not None
                 if not self.logout_pending:
                     self.account_session = self.account_source = None
                 return
             if self.process is not None or self.logout_pending:
                 raise RuntimeError('请先停止任务')
+            if action == 'save':
+                if body != {}:
+                    raise LoginError('保存登录请求格式无效')
+                self.save_account()
+                return
             if self.session_ready() or self.account_file.exists():
                 raise LoginError('请先退出当前账号再重新登录；已有外部会话文件不会被删除')
             if not isinstance(body, dict):
@@ -355,7 +465,8 @@ class Console:
                 raise ValueError('请先登录，再开启自动归档')
             if self.process is not None:
                 raise RuntimeError('任务运行中，请先停止再保存设置')
-            save_json(self.folder / 'settings.json', settings)
+            with credential_store.file_access('settings_save', '设置保存失败，请检查配置目录写权限与磁盘空间'):
+                save_json(self.folder / 'settings.json', settings)
             self.settings = settings
             self.problem = None
             self.next_run = time.time() if settings['automatic'] else None
@@ -588,8 +699,10 @@ def handler_for(console):
             if not self.same_origin():
                 return False
             given = self.headers.get('Authorization', '')
-            if not secrets.compare_digest(given.encode(), ('Bearer ' + console.token).encode()):
-                self.reply(401, {'error': '请输入正确的管理密钥'})
+            encoded = 'Bearer64 ' + base64.b64encode(console.token.encode()).decode('ascii')
+            if not (secrets.compare_digest(given.encode(), encoded.encode()) or
+                    secrets.compare_digest(given.encode(), ('Bearer ' + console.token).encode())):
+                self.reply(401, {'error': '请输入正确的管理密码'})
                 return False
             return True
 
@@ -636,9 +749,15 @@ def handler_for(console):
                     return self.reply(200, {'token': console.connect(body)})
                 if self.path.startswith('/api/account/'):
                     action = self.path.removeprefix('/api/account/')
-                    if action in ('send', 'login') and not self.secure_login():
+                    if action in ('send', 'login', 'save') and not self.secure_login():
                         return self.reply(403, {'error': 'NAS 登录需要 HTTPS；请先配置证书，普通 HTTP 不接收手机号和验证码'})
                     console.account_action(action, body)
+                elif self.path == '/api/password':
+                    if not self.secure_login():
+                        return self.reply(403, {'error': '修改管理密码需要 HTTPS 或电脑版本机连接'})
+                    console.change_password(body)
+                elif self.path == '/api/storage/check':
+                    console.check_storage(body)
                 elif self.path == '/api/local':
                     if isinstance(body, dict) and 'session' in body and not self.secure_login():
                         return self.reply(403, {'error': '导入会话需要本机访问或 HTTPS'})

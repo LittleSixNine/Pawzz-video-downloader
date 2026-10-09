@@ -2,6 +2,7 @@ services:
   pawzz-exporter:
     build: .
     image: pawzz-video:local
+    user: "${PAWZZ_UID:?set dedicated NAS user UID}:${PAWZZ_GID:?set dedicated NAS group GID}"
     network_mode: host
     restart: unless-stopped
     read_only: true

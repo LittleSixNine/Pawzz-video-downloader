@@ -17,8 +17,9 @@ function setMode(value) {
   $('stop-now').textContent = desktop ? '停止本次导出' : '停止并关闭自动归档';
   $('status-title').textContent = desktop ? '导出状态' : '归档状态';
   $('callback-label').textContent = desktop ? '这台电脑的局域网 IP' : 'NAS 回调 IP';
+  $('callback-help').textContent = desktop ? '保存录像的这台电脑的局域网 IP，不填网页的 127.0.0.1。' : 'NAS 储存的 IP，即保存录像的 NAS 局域网地址，不填 DDNSTO 域名。';
   $('login-title').textContent = desktop ? '把原片，留在电脑里。' : '归档状态，一目了然。';
-  $('login-description').textContent = desktop ? '双击启动文件可自动连接；也可从启动窗口提示的文件中获取管理密钥。' : '连接管理服务，查看任务进度、设备配置与存储状态。';
+  $('login-description').textContent = desktop ? '双击启动文件可自动连接；也可从启动窗口提示的文件中获取管理密码。' : '连接管理服务，查看任务进度、设备配置与存储状态。';
   if (desktop) {
     pages.overview = ['导出录像', '准备好设备和保存位置，按需取回原始录像。', '电脑版'];
     pages.settings = ['设备与存储', '登录账号、选择保存位置，设置本轮导出范围。', '管理'];
@@ -32,7 +33,7 @@ const pages = {
   diagnostics: ['诊断', '查看本地准备状态，区分已知结果与待验证项。', '管理'],
   access: ['访问设置', '管理当前页面连接与外观偏好。', '管理']
 };
-const intervals = {'1h': '1 小时', '1d': '1 天', '2d': '2 天', '3d': '3 天'};
+const intervals = {'1h': '1 小时', '3h': '3 小时', '6h': '6 小时', '12h': '12 小时', '1d': '1 天', '2d': '2 天', '3d': '3 天'};
 const states = {running: ['运行中', 'positive'], success: ['成功', 'positive'], failed: ['失败', 'negative'], stopped: ['已停止', ''], interrupted: ['结果未确认', 'warning'], paused: ['空间不足暂停', 'warning']};
 let token = '', timer, busy = false, polling = false, currentPage = 'overview', lastData = null, dirty = false;
 function theme(mode) {
@@ -70,7 +71,7 @@ async function api(path, body) {
   try {
     const response = await fetch('/api/' + path, {signal: controller.signal,
       method: body === undefined ? 'GET' : 'POST',
-      headers: {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'},
+      headers: {'Authorization': 'Bearer64 ' + btoa(String.fromCharCode(...new TextEncoder().encode(token))), 'Content-Type': 'application/json'},
       ...(body === undefined ? {} : {body: JSON.stringify(body)})});
     const data = await response.json();
     if (!response.ok) { const error = new Error(data.error || '请求失败'); error.status = response.status; throw error; }
@@ -125,6 +126,9 @@ function updateControls() {
   $('stop').disabled = busy || (!data.running && !data.settings.automatic);
   for (const control of form.elements) control.disabled = busy || data.running;
   $('refresh').disabled = busy;
+  $('check-storage').disabled = busy || data.running;
+  for (const control of $('password-form').elements) control.disabled = busy || !data.account.login_allowed;
+  $('account-save').disabled = busy || data.running || !data.account.login_allowed;
   for (const id of ['session-file', 'local-output-input', 'save-output']) $(id).disabled = busy || data.running;
   const account = data.account;
   const blocked = busy || data.running || !account.login_allowed || data.session_ready || account.logout_pending;
@@ -142,12 +146,15 @@ function paint(data, fields = false) {
   lastData = data; setMode(data.mode);
   const account = data.account;
   const accountLabels = {temporary: '临时登录', saved: '已加密保存', external: '外部会话文件'};
-  const accountLabel = account.logout_pending ? '正在停止并退出' : accountLabels[account.source] || (account.saved ? '保存文件需处理' : '未登录');
+  const accountLabel = account.save_problem ? '临时登录，保存失败' : account.logout_pending ? '正在停止并退出' : accountLabels[account.source] || (account.saved ? '保存文件需处理' : '未登录');
   badge('account-badge', accountLabel, data.session_ready ? 'positive' : '');
   $('account-transport').hidden = account.login_allowed;
   $('account-form').hidden = data.session_ready || account.saved || account.logout_pending;
   $('account-signed-in').hidden = !data.session_ready && !account.saved && !account.logout_pending && !account.source;
-  $('account-detail').textContent = account.logout_pending ? '正在等待任务停止，完成后清除进程中的登录凭据。' : account.source === 'saved' ? 'NAS 已加密保存 user_id 和 token，解密密钥位于独立目录；手机号和验证码未写入文件。文件与密钥不可一起分享。' : account.source === 'external' ? '正在使用你提供的明文会话文件。退出会停用该文件，但不会删除宿主机原件。' : account.source === 'temporary' ? '登录凭据仅在当前服务内存中使用，程序未将它们保存到文件。' : '保存的登录状态无法使用，请退出后重新登录。';
+  $('account-save').hidden = mode !== 'server' || account.source !== 'temporary' || !data.session_ready;
+  $('default-password-note').hidden = !data.default_password;
+  $('account-detail').textContent = account.logout_pending ? '正在等待任务停止，完成后清除进程中的登录凭据。' : account.source === 'saved' ? 'NAS 已加密保存 user_id 和 token，解密密钥位于独立目录；手机号和验证码未写入文件。文件与密钥不可一起分享。' : account.source === 'external' ? '正在使用你提供的明文会话文件。退出会停用该文件，但不会删除宿主机原件。' : account.source === 'temporary' ? '登录凭据仅在当前服务内存中使用，程序未将它们保存到文件，重启后失效。' : '保存的登录状态无法使用，请退出后重新登录。';
+  if (account.save_problem) $('account-detail').textContent += ' 加密保存失败：' + account.save_problem + '。修复权限后可点击加密保存，无需再次短信登录。';
   if (previousAccount && previousAccount.code_pending && !account.code_pending) $('account-form').reset();
   if (wasRunning && !data.running) message(data.last_result + (previousAccount.source === 'temporary' && !account.source ? '。临时登录已清除，下次导出请重新登录。' : ''), data.last_exit !== 0);
   const settings = data.settings, history = data.history || [], latest = history[0], storage = data.storage;
@@ -181,15 +188,18 @@ function paint(data, fields = false) {
   $('local-output-summary').textContent = data.output;
   $('local-scope').textContent = settings.source ? '指定原片' : settings.start_date ? '自 ' + settings.start_date : '全部日期';
   if (!localDirty) $('local-output-input').value = data.output;
-  $('storage-state').textContent = !storage.available ? '目录不可访问' : storage.writable ? '目录可访问，写权限初检通过' : '目录可访问，写权限初检未通过';
+  $('storage-state').textContent = storage.message;
+  $('write-check-result').textContent = storage.write_check ? storage.write_check.message : '检查会创建、读取并删除一个临时文件，不修改已有录像；任务运行期间不可执行。';
   $('storage-capacity').textContent = bytes(storage.free) + ' / ' + bytes(storage.total);
   const issues = [];
   if (!data.configured) issues.push('设备连接尚未配置完整。');
   if (!data.session_ready) issues.push('尚未准备登录会话，暂不能执行导出。');
   if (data.configured && !settings.allow_maintenance) issues.push('维护读取许可尚未开启。');
-  if (!storage.available || !storage.writable) issues.push('输出目录未就绪，请检查保存位置与权限。');
+  if (!storage.available || !storage.writable) issues.push(storage.message);
   if (storage.available && storage.free < data.policy.min_free_bytes) issues.push('可用空间不足 5 GB，暂停归档；不会自动删除录像。');
   if (data.problem) issues.push(data.problem);
+  if (account.save_problem) issues.push('账号已临时登录，但未加密保存：' + account.save_problem);
+  if (data.default_password) issues.push('当前管理密码为 admin，请在设置中修改。');
   if (latest && ['failed', 'interrupted'].includes(latest.state)) issues.push(latest.result);
   $('attention-list').replaceChildren(...issues.map(text => element('li', text)));
   $('attention-panel').hidden = !issues.length;
@@ -200,7 +210,9 @@ function paint(data, fields = false) {
     diagnostic('管理服务', '网页可以读取当前服务的状态', '已连接', 'positive'),
     diagnostic('设备配置', '仅验证字段格式，不代表设备在线', data.configured ? '已配置' : '待设置', data.configured ? 'positive' : 'warning'),
     diagnostic('账号登录状态', '仅显示是否已准备，不向页面返回凭据', data.session_ready ? '已准备' : '待登录', data.session_ready ? 'positive' : 'warning'),
-    diagnostic('输出目录', '目录可访问性与写权限初检；未进行真实写入验收', storage.available && storage.writable ? '初检通过' : '需要检查', storage.available && storage.writable ? 'positive' : 'warning'),
+    diagnostic('输出目录', storage.message + (storage.write_check ? '；' + storage.write_check.message : '；可在设置中检查实际写入权限'), storage.write_check ? (storage.write_check.passed ? '写入检查通过' : '写入检查失败') : storage.available && storage.writable ? '初检通过' : '需要检查', storage.available && storage.writable && (!storage.write_check || storage.write_check.passed) ? 'positive' : 'warning'),
+    diagnostic('运行身份', 'UID ' + data.permissions.uid + ' / GID ' + data.permissions.gid, data.permissions.uid === 0 ? 'root：请配置专用账号' : '非 root', data.permissions.uid === 0 ? 'warning' : 'positive'),
+    ...data.permissions.directories.map(check => diagnostic(check.name, check.message + (check.owner === null ? '' : '；所有者 UID ' + check.owner), check.state === 'ready' ? '初检通过' : '需要检查', check.state === 'ready' ? 'positive' : 'warning')),
     diagnostic('任务历史', data.history_valid ? '保存最近 100 轮记录' : '保留原文件，修复后重启服务', data.history_valid ? '可读取' : '读取失败', data.history_valid ? 'positive' : 'warning'),
     diagnostic('设备在线与回调', '尚未对真实设备执行连通性验证', '未检测')
   );
@@ -218,7 +230,7 @@ function paint(data, fields = false) {
 }
 function disconnect() {
   token = ''; clearInterval(timer); lastData = null; dirty = false; localDirty = false;
-  $('key').value = ''; $('account-form').reset(); $('local-output-form').reset(); $('session-file').value = ''; form.reset(); $('console').hidden = true; $('navigation').hidden = true; $('login').hidden = false;
+  $('key').value = ''; $('password-form').reset(); $('account-form').reset(); $('local-output-form').reset(); $('session-file').value = ''; form.reset(); $('console').hidden = true; $('navigation').hidden = true; $('login').hidden = false;
   document.body.classList.add('signed-out'); $('connection').textContent = '未连接管理服务'; $('service-dot').classList.remove('online');
   $('breadcrumb').textContent = '本地管理入口'; $('updated-at').textContent = '数据仅在认证后加载';
 }
@@ -240,7 +252,7 @@ function connected(data) {
   timer = setInterval(() => refresh(), 5000);
 }
 $('login-form').addEventListener('submit', async event => {
-  event.preventDefault(); token = $('key').value.trim();
+  event.preventDefault(); token = $('key').value;
   const session = token;
   try { const data = await api('status'); if (session === token) connected(data); }
   catch (error) { disconnect(); failure(error); }
@@ -252,7 +264,7 @@ async function initialize() {
       const login = await api('connect', {code: connectCode}); token = login.token;
       connected(await api('status'));
     }
-  } catch (error) { disconnect(); message('自动连接未完成，请使用管理密钥连接。', true); }
+  } catch (error) { disconnect(); message('自动连接未完成，请使用管理密码连接。', true); }
 }
 initialize();
 $('local-output-input').addEventListener('input', () => { localDirty = true; updateControls(); });
@@ -311,8 +323,8 @@ async function accountAction(action, body) {
     const data = await api('account/' + action, body);
     if (current === token && token) {
       paint(data);
-      const notices = {send: '已请求发送短信。收到后填写验证码，不会自动重发。', login: '登录成功。确认设备设置与维护许可后，再开始导出。', logout: data.account.logout_pending ? '已请求停止任务，停止后清除登录凭据。' : '已退出账号。本程序保存的凭据已移除；外部原件与备份请自行管理。', cancel: '已取消本次验证码验证并清空输入。'};
-      message(notices[action]);
+      const notices = {send: '已请求发送短信。收到后填写验证码，不会自动重发。', login: data.account.save_problem ? '登录成功，但加密保存失败。当前为临时登录，重启后失效；修复权限后可直接再次保存。' : data.account.source === 'saved' ? '登录成功，已加密保存。确认设备设置与维护许可后，再开始导出。' : '临时登录成功，重启后失效。确认设备设置与维护许可后，再开始导出。', save: data.account.save_problem ? '仍未加密保存：' + data.account.save_problem : '当前登录已加密保存，无需重新登录。', logout: data.account.logout_pending ? '已请求停止任务，停止后清除登录凭据。' : '已退出账号。本程序保存的凭据已移除；外部原件与备份请自行管理。', cancel: '已取消本次验证码验证并清空输入。'};
+      message(notices[action], Boolean(data.account.save_problem));
       if (action !== 'send') $('account-form').reset();
       if (action === 'logout') form.elements.namedItem('automatic').checked = false;
     }
@@ -332,3 +344,30 @@ $('account-form').addEventListener('submit', event => {
 $('account-cancel').addEventListener('click', () => { $('account-form').reset(); accountAction('cancel', {}); });
 $('account-logout').addEventListener('click', () => accountAction('logout', {}));
 window.addEventListener('pagehide', () => $('account-form').reset());
+
+$('account-save').addEventListener('click', () => accountAction('save', {}));
+$('check-storage').addEventListener('click', async () => {
+  if (busy) return;
+  busy = true; updateControls(); const current = token;
+  try {
+    const data = await api('storage/check', {});
+    if (current === token && token) { paint(data); message(data.storage.write_check.message, !data.storage.write_check.passed); }
+  } catch (error) { if (current === token && token) failure(error); }
+  finally { busy = false; updateControls(); }
+});
+$('password-form').addEventListener('submit', async event => {
+  event.preventDefault(); if (busy) return;
+  const password = $('new-password').value;
+  const body = {current: $('current-password').value, password, confirm: $('confirm-password').value};
+  if (password !== body.confirm) { message('两次输入的新密码不一致。', true); return; }
+  busy = true; updateControls(); const current = token;
+  try {
+    const data = await api('password', body);
+    if (current === token && token) {
+      token = password; $('password-form').reset(); paint(data);
+      message('管理密码已修改并立即生效，其他页面需要用新密码重新连接。');
+    }
+  } catch (error) { if (current === token && token) failure(error); }
+  finally { busy = false; updateControls(); }
+});
+window.addEventListener('pagehide', () => $('password-form').reset());

@@ -3,9 +3,22 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import errno
+from contextlib import contextmanager
 
 from cryptography.fernet import Fernet, InvalidToken
 from account_login import credentials, LoginError
+
+
+@contextmanager
+def file_access(step, message):
+    try:
+        yield
+    except OSError as error:
+        code = errno.errorcode.get(error.errno, 'IO_ERROR')
+        # Never log exception text: it can include a private path or credential.
+        print(f'file access failed: step={step} errno={code}', flush=True)
+        raise LoginError(f'{message}（{code}）') from None
 
 
 def key_location(value, config_folder):
@@ -28,24 +41,35 @@ def read_key(path):
 def save(path, key_path, value):
     value = credentials(value)
     # Never regenerate a missing key when ciphertext already exists.
-    if path.exists():
+    with file_access('login_lookup', '无法检查已有登录文件，请检查登录目录访问权限；不会覆盖已有文件'):
+        existing = path.exists()
+    if existing:
         raise LoginError('已存在保存的登录状态，请先退出账号')
-    if not key_path.exists():
-        key_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(key_path.parent, 0o700)
-        fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(Fernet.generate_key())
-    cipher = read_key(key_path).encrypt(json.dumps(value, separators=(',', ':')).encode())
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(path.parent, 0o700)
-    fd, name = tempfile.mkstemp(prefix='.session-', dir=path.parent)
-    try:
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(cipher)
-        Path(name).replace(path)
-    finally:
-        Path(name).unlink(missing_ok=True)
+    with file_access('key_lookup', '无法访问密钥目录，请检查运行用户、目录所有者与权限'):
+        key_exists = key_path.exists()
+    if not key_exists:
+        with file_access('key_directory', '密钥目录无法创建或访问，请检查密钥挂载与目录权限'):
+            key_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with file_access('key_permissions', '无法收紧密钥目录权限，请让目录所有者与程序运行用户一致'):
+            os.chmod(key_path.parent, 0o700)
+        with file_access('key_create', '无法创建加密密钥，请检查密钥目录写权限与磁盘空间'):
+            fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(Fernet.generate_key())
+    with file_access('key_read', '无法读取原加密密钥，请检查密钥文件权限；不要删除或替换原密钥'):
+        cipher = read_key(key_path).encrypt(json.dumps(value, separators=(',', ':')).encode())
+    with file_access('login_directory', '登录保存目录无法创建，请检查配置目录写权限'):
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with file_access('login_permissions', '无法收紧登录目录权限，请让目录所有者与程序运行用户一致'):
+        os.chmod(path.parent, 0o700)
+    with file_access('login_write', '加密登录文件保存失败，请检查配置目录写权限与磁盘空间'):
+        fd, name = tempfile.mkstemp(prefix='.session-', dir=path.parent)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(cipher)
+            Path(name).replace(path)
+        finally:
+            Path(name).unlink(missing_ok=True)
 
 
 def load(path, key_path):

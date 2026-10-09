@@ -189,9 +189,12 @@ class LoginConsoleTests(unittest.TestCase):
 
     def test_failed_save_never_reports_persistence_success(self):
         self.console.mode = 'server'
-        with patch('credential_store.save', side_effect=PermissionError('SYNTHETIC_PRIVATE_PATH')), self.assertRaises(OSError):
+        with patch('credential_store.save', side_effect=PermissionError(13, 'SYNTHETIC_PRIVATE_PATH')):
             self.console.install_session({'user_id': 'demo', 'token': 'SYNTHETIC_ONLY'}, True)
-        self.assertFalse(self.console.session_ready())
+        self.assertTrue(self.console.session_ready())
+        self.assertEqual(self.console.account_source, 'temporary')
+        self.assertIn('EACCES', self.console.account_save_problem)
+        self.assertNotIn('SYNTHETIC_PRIVATE_PATH', self.console.account_save_problem)
         self.assertFalse(self.console.account_file.exists())
 
     def test_server_temporary_schedule_and_rejected_auth_do_not_silently_resume(self):
