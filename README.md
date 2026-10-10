@@ -161,6 +161,8 @@ Pawzz-video/
 └── README.md
 ```
 
+开发资料与历史版本的整理约定见 [源码、私人数据与历史版本](docs/workspace.md)。
+
 电脑端的管理密钥、配置与历史默认放在 `~/Library/Application Support/Pawzz Video/`，原片默认放在 `~/Movies/Pawzz Video/`。新的电脑临时登录不会写入会话文件。Docker 的数据位置由 `.env` 指定。这些内容都不应进入公开仓库或镜像。
 
 ## 开发与反馈
