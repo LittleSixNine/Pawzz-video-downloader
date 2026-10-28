@@ -1,5 +1,8 @@
 **
 !Dockerfile
+!platforms/
+!platforms/docker/
+!platforms/docker/Dockerfile
 !requirements.txt
 !src/
 !src/direct_exporter.py
@@ -17,3 +20,14 @@
 
 !src/account_login.py
 !src/credential_store.py
+!src/device_discovery.py
+!src/diagnostics.py
+!src/media_tools.py
+
+# Optional NAS Notify configuration and producer state
+**/notify.json
+**/notify-outbox/
+!src/notify_client.py
+!src/pawzz_notifications.py
+
+**/notify-policy.json

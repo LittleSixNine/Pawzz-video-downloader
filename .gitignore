@@ -40,3 +40,13 @@ instance.lock
 # Encrypted credentials are still private.
 *.enc
 account-disabled
+
+# Optional NAS Notify configuration and producer state
+**/notify.json
+**/notify-outbox/
+
+**/notify-policy.json
+
+# Rebuilt from the pinned source by tools/build_macos_ffmpeg.sh.
+platforms/desktop/ffmpeg/macos-*/ffmpeg
+platforms/desktop/ffmpeg/source/

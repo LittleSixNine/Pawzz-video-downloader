@@ -24,7 +24,7 @@ class RepairTests(unittest.TestCase):
             validate(dict(settings, repair_video='yes'))
 
     def test_missing_ffmpeg_fails_before_device_connection(self):
-        with patch('direct_exporter.shutil.which', return_value=None), patch('direct_exporter.DeviceClient') as device:
+        with patch('direct_exporter.ffmpeg_path', return_value=None), patch('direct_exporter.DeviceClient') as device:
             with self.assertRaises(RepairError): export_cycle({'repair': True})
             device.assert_not_called()
 
@@ -56,7 +56,7 @@ class RepairTests(unittest.TestCase):
                         Path(args[-1]).write_bytes(b'remux')
                         return subprocess.CompletedProcess(args, 0, b'')
                     return subprocess.CompletedProcess(args, 0, str(len(calls)).encode())
-                with patch('direct_exporter.subprocess.run', side_effect=run):
+                with patch('direct_exporter.ffmpeg_path', return_value='/test/ffmpeg'), patch('direct_exporter.subprocess.run', side_effect=run):
                     with self.assertRaises(RepairError): repair_video(original, output)
                 self.assertEqual(original.read_bytes(), b'original')
                 self.assertFalse((output/'repaired/source.mp4').exists())

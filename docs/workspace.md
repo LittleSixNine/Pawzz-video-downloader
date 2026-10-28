@@ -4,6 +4,10 @@
 
 从项目根目录的 [README](../README.md) 开始；电脑使用见 [desktop.md](desktop.md)，Docker / NAS 部署见 [deployment.md](deployment.md)。`src/` 和 `web/` 是当前实现，`tests/` 使用虚构资料进行本地验证，`skills/` 提供 Agent 入口。
 
+平台文件在 `platforms/desktop/` 与 `platforms/docker/` 分开放置；源码根目录保留原有启动入口与兼容链接。Docker 模板按发行包根目录使用，从源码启动也应在源码根目录运行 Compose，不能单独在模板目录内运行。发布生成器会将容器模板写成发行包根目录的普通文件，避免目标系统依赖源码兼容链接。
+
+准备好两种 Mac FFmpeg 后，运行 `python tools/build_release.py /发行产物目录 --version 2026.10.28`，产物分别写入 `desktop/` 和 `docker/`。包内 `CONTENTS.sha256` 校验各文件，包旁 `.zip.sha256` 校验整个 ZIP。脚本仅收录指定源码、网页、说明及平台资源；不读取运行配置、账号或录像。生成的二进制、源码归档和发行包不提交 Git。
+
 可以在源码目录之外建立一个本地工作区，分别保存：
 
 | 目录 | 内容 | 是否上传公开仓库 |

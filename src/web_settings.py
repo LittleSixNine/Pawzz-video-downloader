@@ -16,27 +16,42 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
-from direct_exporter import config, require_storage, LowStorageError, MIN_FREE_BYTES
+from direct_exporter import config, require_storage, LowStorageError, MIN_FREE_BYTES, source_path
+from device_discovery import normalize_mac
 from synology_exporter import INTERVALS
 import account_login
 import credential_store
+from pawzz_notifications import Notifications
 from account_login import LoginError
+from diagnostics import DailyLogs, PREFIX, STAGES, clean_event, error_fields, day_name
+from media_tools import ffmpeg_status, MISSING
 
-DEFAULTS = dict(device_ip='', callback_ip='', callback_port=10003, serial='',
+DEFAULTS = dict(device_ip='', device_mac='', callback_ip='', callback_port=10003, serial='',
                 start_date='', source='', interval='1d', allow_maintenance=False,
                 automatic=False, repair_video=False)
-FIELDS = dict(device_ip='PAWZZ_DEVICE_IP', callback_ip='PAWZZ_CALLBACK_IP',
+FIELDS = dict(device_ip='PAWZZ_DEVICE_IP', device_mac='PAWZZ_DEVICE_MAC', callback_ip='PAWZZ_CALLBACK_IP',
               callback_port='PAWZZ_CALLBACK_PORT', serial='PAWZZ_SN',
               start_date='PAWZZ_START_DATE', source='PAWZZ_SOURCE', interval='PAWZZ_INTERVAL')
 LAN = tuple(ipaddress.ip_network(x) for x in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))
 RETRY_DELAY = 600
 MAX_RETRIES = 3
+SETTING_GROUPS = dict(device={'device_ip', 'device_mac', 'callback_ip', 'callback_port', 'serial', 'allow_maintenance'},
+                      archive={'start_date', 'source', 'interval', 'repair_video'})
 
 
-def validate(settings):
+class SettingsError(ValueError):
+    def __init__(self, field, message):
+        super().__init__(message)
+        self.field = field
+
+
+def validate(settings, allow_incomplete=False):
+    if isinstance(settings, dict) and 'device_mac' not in settings:
+        settings = dict(settings, device_mac='')
     if isinstance(settings, dict) and 'repair_video' not in settings:
         settings = dict(settings, repair_video=False)
     if not isinstance(settings, dict) or set(settings) != set(DEFAULTS):
@@ -49,18 +64,40 @@ def validate(settings):
     for name in FIELDS.keys() - {'callback_port'}:
         if not isinstance(settings[name], str) or len(settings[name]) > 256:
             raise ValueError('设置格式无效')
-    if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', settings['serial']):
-        raise ValueError('请填写有效设备序列号（字母、数字、下划线或短横线）')
+    complete = not allow_incomplete or settings['automatic']
+    if (settings['serial'] or complete) and not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', settings['serial']):
+        raise SettingsError('serial', '请填写有效设备序列号（字母、数字、下划线或短横线）')
+    if not 1024 <= settings['callback_port'] <= 65535:
+        raise SettingsError('callback_port', '回调端口必须在 1024 到 65535 之间')
+    for name, check in (('device_mac', normalize_mac), ('source', source_path),
+                        ('start_date', lambda value: datetime.strptime(value, '%Y-%m-%d'))):
+        if settings[name]:
+            try:
+                check(settings[name])
+            except ValueError:
+                raise SettingsError(name, {'device_mac': 'MAC 格式应为 02:11:22:33:44:55',
+                                          'source': '请填写有效的原片路径', 'start_date': '请填写有效的开始日期'}[name]) from None
+    if settings['interval'] not in INTERVALS:
+        raise SettingsError('interval', '请选择有效的执行间隔')
     try:
         for name in ('device_ip', 'callback_ip'):
-            address = ipaddress.IPv4Address(settings[name])
-            if not any(address in network for network in LAN):
-                raise ValueError()
-        config(environment(settings, {} , allow_for_validation=True))
+            if not complete and not settings[name]:
+                continue
+            if name == 'device_ip' and not settings[name] and settings['device_mac']:
+                continue
+            try:
+                address = ipaddress.IPv4Address(settings[name])
+                if not any(address in network for network in LAN):
+                    raise ValueError()
+            except ValueError:
+                raise SettingsError(name, '请填写局域网 IPv4 地址' if name == 'callback_ip' else '请填写设备 IP，或提供备用 MAC') from None
+        config(environment(settings, {}, allow_for_validation=True), allow_incomplete=not complete)
+    except SettingsError:
+        raise
     except (ValueError, KeyError, TypeError):
-        raise ValueError('请检查私网 IPv4、端口、日期、源文件路径和周期') from None
+        raise ValueError('请检查设备 MAC、私网 IPv4、端口、日期、源文件路径和周期') from None
     if settings['automatic'] and not settings['allow_maintenance']:
-        raise ValueError('自动运行需要明确允许维护读取')
+        raise SettingsError('allow_maintenance', '自动运行需要明确允许维护读取；可先暂停自动归档再关闭许可')
     return settings.copy()
 
 
@@ -115,6 +152,7 @@ def directory_status(path):
 class Console:
     def __init__(self, folder, base_env=None):
         self.folder = folder
+        self.logs = DailyLogs(folder)
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.env = dict(os.environ if base_env is None else base_env)
         self.mode = self.env.get('PAWZZ_MODE', 'server')
@@ -132,7 +170,7 @@ class Console:
         settings_path = folder / 'settings.json'
         if settings_path.exists():
             try:
-                self.settings = validate(json.loads(settings_path.read_text()))
+                self.settings = validate(json.loads(settings_path.read_text()), allow_incomplete=True)
             except (ValueError, OSError):
                 self.problem = '保存的设置无法读取，请重新保存；未启动导出'
         if self.mode == 'desktop':
@@ -200,6 +238,8 @@ class Console:
                         record.update(state='interrupted', result='服务曾中断，上轮结果未确认',
                                       finished_at=None, exit_code=None, new_files=None)
                         changed = True
+                        if re.fullmatch(r'[0-9a-f]{16}', record['id']):
+                            self.logs.write(dict(time=time.time(), task_id=record['id'], stage='task', action='interrupted'))
                 if changed:
                     save_json(history_path, self.history)
                 if self.history:
@@ -218,8 +258,17 @@ class Console:
         self.next_kind = 'scheduled' if self.next_run else None
         self.retry_count = 0
         self.monitor = None
+        self.notifications = Notifications(self.folder, self.notification_status, self.closed)
+        if self.history and self.history[0]['state'] == 'interrupted':
+            self.notifications.record(self.history[0])
+        self.notifications.start()
         self.scheduler = threading.Thread(target=self.schedule, daemon=True)
         self.scheduler.start()
+
+    def notification_status(self):
+        with self.lock:
+            return dict(monitoring=bool(self.settings['automatic'] or self.process is not None),
+                        next_start=self.next_run, problem_code='auth_expired' if self.account_problem else '')
 
     def snapshot(self):
         with self.lock:
@@ -258,6 +307,7 @@ class Console:
                                      code_pending=self.sms_phone is not None),
                         problem=self.account_problem or self.problem or self.history_problem, output=str(output),
                         configured=configured, storage=storage, history_valid=self.history_valid,
+                        diagnostics_problem=self.logs.problem, ffmpeg=ffmpeg_status(),
                         permissions=permissions, default_password=self.token == 'admin',
                         next_kind=self.next_kind, retry_count=self.retry_count,
                         policy=dict(retry_seconds=RETRY_DELAY, max_retries=MAX_RETRIES,
@@ -397,6 +447,7 @@ class Console:
                     raise LoginError('退出请求格式无效')
                 save_json(self.folder / 'account-disabled', True)
                 self.external_disabled = True
+                self.automation({'enabled': False})
                 self.stop()
                 self.account_file.unlink(missing_ok=True)
                 self.sms_phone = None
@@ -453,13 +504,17 @@ class Console:
             self.history_problem = None
         except OSError:
             self.history_problem = '任务历史保存失败，请检查配置目录权限与磁盘空间'
+        if self.history:
+            self.notifications.record(self.history[0])
 
-    def save(self, settings):
-        settings = validate(settings)
+    def save(self, settings, allow_incomplete=False):
+        settings = validate(settings, allow_incomplete=allow_incomplete)
+        if settings['repair_video'] and not ffmpeg_status()['available']:
+            raise SettingsError('repair_video', MISSING)
         if self.mode == 'desktop' and settings['automatic']:
             raise ValueError('电脑版仅按需导出，不开启后台计划')
         if settings['callback_port'] == int(self.env.get('PAWZZ_WEB_PORT', '8080')):
-            raise ValueError('回调端口不能与网页端口相同')
+            raise SettingsError('callback_port', '回调端口不能与网页端口相同')
         with self.lock:
             if settings['automatic'] and not self.session_ready():
                 raise ValueError('请先登录，再开启自动归档')
@@ -467,11 +522,43 @@ class Console:
                 raise RuntimeError('任务运行中，请先停止再保存设置')
             with credential_store.file_access('settings_save', '设置保存失败，请检查配置目录写权限与磁盘空间'):
                 save_json(self.folder / 'settings.json', settings)
+            previous = self.settings
             self.settings = settings
             self.problem = None
-            self.next_run = time.time() if settings['automatic'] else None
-            self.next_kind = 'scheduled' if self.next_run else None
+            if not settings['automatic']:
+                self.next_run = self.next_kind = None
+                self.retry_count = 0
+            elif not previous['automatic'] or settings['interval'] != previous['interval']:
+                self.retry_count = 0
+                self.schedule_next()
+
+    def save_group(self, group, body):
+        if group not in SETTING_GROUPS or not isinstance(body, dict) or set(body) != SETTING_GROUPS[group]:
+            raise ValueError('设置分组字段无效')
+        with self.lock:
+            self.save(dict(self.settings, **body), allow_incomplete=True)
+
+    def automation(self, body):
+        if not isinstance(body, dict) or set(body) != {'enabled'} or type(body['enabled']) is not bool:
+            raise ValueError('自动归档请求无效')
+        with self.lock:
+            enabled = body['enabled']
+            if enabled:
+                if self.mode == 'desktop' or self.closed.is_set():
+                    raise ValueError('当前模式不支持自动归档')
+                validate(dict(self.settings, automatic=True))
+                if self.settings['repair_video'] and not ffmpeg_status()['available']:
+                    raise SettingsError('repair_video', MISSING)
+                if not self.session_ready() or not self.history_valid or self.account_problem:
+                    raise ValueError('请先准备登录状态、设置和任务历史')
+            if self.settings['automatic'] == enabled:
+                return
+            settings = dict(self.settings, automatic=enabled)
+            save_json(self.folder / 'settings.json', settings)
+            self.settings = settings
             self.retry_count = 0
+            self.next_run = time.time() if enabled and self.process is None else None
+            self.next_kind = 'scheduled' if self.next_run is not None else None
 
     def schedule_next(self, failed=False, low_storage=False):
         self.next_run = self.next_kind = None
@@ -493,6 +580,8 @@ class Console:
             if self.closed.is_set() or self.process is not None:
                 raise RuntimeError('已有任务运行或服务正在关闭')
             settings = validate(self.settings)
+            if settings['repair_video'] and not ffmpeg_status()['available']:
+                raise SettingsError('repair_video', MISSING)
             if not settings['allow_maintenance']:
                 raise ValueError('请先允许维护读取并保存设置')
             self.expire_account()
@@ -508,6 +597,7 @@ class Console:
             except LowStorageError:
                 self.problem = '存储空间不足，归档已暂停；需保留至少 5 GB 可用空间'
                 self.schedule_next(low_storage=True)
+                self.notifications.failed_start('storage_low')
                 raise
             if trigger != 'retry':
                 self.retry_count = 0
@@ -515,11 +605,17 @@ class Console:
                           trigger=trigger, retry_attempt=self.retry_count, state='running', new_files=0, exit_code=None,
                           result='正在执行', scope='指定原片' if settings['source'] else
                           ('自 ' + settings['start_date'] if settings['start_date'] else '全部日期'))
+            previous = self.history[0] if trigger == 'retry' and self.history else None
+            record['root_task_id'] = previous.get('root_task_id', previous['id']) if previous else record['id']
             # Persist before launching: a later restart can identify unfinished work.
             updated = [record] + self.history[:99]
             save_json(self.folder / 'history.json', updated)
             self.history = updated
+            self.notifications.record(record)
             self.history_problem = None
+            self.logs.write(dict(time=record['started_at'], task_id=record['id'], stage='task', action='start',
+                                 root_task_id=record['root_task_id'], retry_attempt=self.retry_count))
+            env['PAWZZ_TASK_ID'] = record['id']
             read_fd = write_fd = None
             try:
                 if self.account_session:
@@ -537,13 +633,14 @@ class Console:
                     with os.fdopen(write_fd, 'w') as pipe:
                         write_fd = None
                         json.dump(self.account_session, pipe)
-            except OSError:
+            except OSError as error:
                 if self.process is not None:
                     self.process.terminate()
                     self.process.wait(timeout=10)
                     self.process.stdout.close()
                     self.process = None
                 record.update(state='failed', finished_at=time.time(), result='导出进程未能启动')
+                self.logs.write(dict(time=time.time(), task_id=record['id'], stage='task', action='failed', **error_fields(error)))
                 self.last_result = record['result']
                 self.last_exit = None
                 self.last_finished = record['finished_at']
@@ -563,7 +660,11 @@ class Console:
     def watch(self, process, record):
         result = None
         # Never expose raw worker output, file names or credentials to logs/API.
-        hints = {'repair_failed': '无损修复失败：原片已保留，请检查 FFmpeg、修复版文件及磁盘空间',
+        hints = {'device_not_found': '未发现设备：检查 MAC、设备在线状态，以及喂食器与 NAS 是否在同一局域网',
+                 'device_ambiguous': '设备地址不唯一：请检查重复 MAC 或稍后重试',
+                 'device_network_unsupported': '无法自动识别设备网段：检查 NAS 回调 IP；自动识别仅支持同一局域网且子网最多 1024 个地址',
+                 'device_discovery_unavailable': 'MAC 自动识别不可用：请使用新版 Linux/NAS 镜像（含 iproute2），或改填设备 IP 并清空 MAC',
+                 'repair_failed': '无损修复失败：原片已保留，请检查 FFmpeg、修复版文件及磁盘空间',
                  'missing_file': '文件缺失：检查会话挂载或输出目录',
                  'permission_denied': '权限不足：检查会话、输出目录与 NAS ACL',
                  'timeout': '连接或回调超时：检查地址、端口、防火墙与 MQTT',
@@ -571,6 +672,21 @@ class Console:
                  'invalid_data': '配置或校验错误：检查设置、会话格式与文件完整性',
                  'operation_failed': '操作失败：检查 MQTT 访问和回调校验'}
         for line in process.stdout:
+            if line.startswith(PREFIX):
+                try:
+                    value = clean_event(json.loads(line[len(PREFIX):]), record.get('id'))
+                except (ValueError, TypeError):
+                    continue
+                self.logs.write(value)
+                if value['stage'] not in ('task', 'cleanup'):
+                    record['stage'] = value['stage']
+                if value['action'] == 'retry':
+                    record.pop('failure_stage', None)
+                if value['action'] == 'failed' and value['stage'] != 'task':
+                    record.setdefault('failure_stage', value['stage'])
+                if value.get('reason') == 'source_mismatch':
+                    record['source_ip_mismatch'] = True
+                continue
             if line.startswith('verified original:'):
                 with self.lock:
                     record['new_files'] += 1
@@ -600,8 +716,19 @@ class Console:
             if code == 3:
                 self.last_result = '空间不足以保留 5 GB 余量，归档已暂停；已有原片保留'
                 self.problem = self.last_result
+            if code not in (0, 3, 4, 130, -15):
+                stage = record.get('failure_stage', record.get('stage'))
+                if stage in STAGES:
+                    self.last_result += '；阶段：' + STAGES[stage]
+                if record.get('source_ip_mismatch'):
+                    self.last_result += '；检测到回传来源 IP 不符，请核对设备地址'
             record.update(finished_at=self.last_finished, exit_code=code, result=self.last_result,
                           state='success' if code == 0 else 'paused' if code == 3 else 'stopped' if code in (130, -15) else 'failed')
+            if record.get('id'):
+                self.logs.write(dict(time=self.last_finished, task_id=record['id'], stage='task',
+                                     action=record['state'], exit_code=code,
+                                     count=record.get('new_files') or 0,
+                                     duration_ms=round((self.last_finished - record.get('started_at', self.last_finished)) * 1000)))
             if self.logout_pending or code == 4:
                 self.account_session = self.account_source = None
                 self.logout_pending = False
@@ -610,14 +737,6 @@ class Console:
 
     def stop(self):
         with self.lock:
-            # Stopping also disables the schedule, so it cannot start a second job.
-            if self.settings['automatic']:
-                updated = dict(self.settings, automatic=False)
-                save_json(self.folder / 'settings.json', updated)
-                self.settings = updated
-            self.next_run = None
-            self.next_kind = None
-            self.retry_count = 0
             if self.process is not None:
                 try:
                     self.process.terminate()
@@ -636,6 +755,7 @@ class Console:
                     pass  # start() already scheduled the next local space check.
                 except (ValueError, RuntimeError, OSError):
                     self.problem = '自动任务未能启动，请检查设置和会话挂载'
+                    self.notifications.failed_start()
                     self.schedule_next(failed=True)
 
     def close(self):
@@ -669,12 +789,14 @@ def handler_for(console):
             super().setup()
             self.connection.settimeout(10)
 
-        def reply(self, code, body, kind='application/json; charset=utf-8'):
+        def reply(self, code, body, kind='application/json; charset=utf-8', filename=None):
             data = json.dumps(body, ensure_ascii=False).encode() if isinstance(body, dict) else body
             self.send_response(code)
             self.send_header('Content-Type', kind)
             self.send_header('Content-Length', str(len(data)))
             self.send_header('Cache-Control', 'no-store')
+            if filename:
+                self.send_header('Content-Disposition', 'attachment; filename="' + filename + '"')
             self.send_header('X-Content-Type-Options', 'nosniff')
             self.send_header('Referrer-Policy', 'no-referrer')
             self.send_header('Content-Security-Policy', "default-src 'self'; frame-ancestors 'none'; form-action 'self'")
@@ -730,6 +852,30 @@ def handler_for(console):
                 return
             if self.path == '/api/status':
                 return self.reply(200, self.status())
+            if self.path == '/api/notification-settings':
+                return self.reply(200, console.notifications.settings())
+            parsed = urlsplit(self.path)
+            if parsed.path == '/api/logs':
+                try:
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    if set(query) - {'date', 'task', 'download'} or any(len(values) != 1 for values in query.values()):
+                        raise ValueError()
+                    if not query:
+                        return self.reply(200, dict(dates=console.logs.dates(), today=day_name(), problem=console.logs.problem))
+                    day = query.get('date', [''])[0]
+                    task = query.get('task', [''])[0]
+                    download = query.get('download', ['0'])[0]
+                    if download not in ('0', '1'):
+                        raise ValueError()
+                    value = console.logs.read(day, task, limit=None if download == '1' else 200)
+                    if download == '1':
+                        data = ''.join(json.dumps(row, ensure_ascii=False) + '\n' for row in value['entries']).encode()
+                        return self.reply(200, data, 'application/x-ndjson; charset=utf-8', 'pawzz-diagnostics-' + day + '.jsonl')
+                    return self.reply(200, value)
+                except (ValueError, TypeError):
+                    return self.reply(400, {'error': '日志日期或任务编号无效'})
+                except OSError:
+                    return self.reply(500, {'error': '详细日志读取失败，请检查配置目录权限与磁盘状态'})
             self.reply(404, {'error': '接口不存在'})
 
         def do_POST(self):
@@ -745,6 +891,9 @@ def handler_for(console):
                 if not 0 < size <= 8192:
                     raise ValueError('请求长度无效')
                 body = json.loads(self.rfile.read(size))
+                if self.path == '/api/notification-settings':
+                    console.notifications.save_policy(body)
+                    return self.reply(200, console.notifications.settings())
                 if self.path == '/api/connect' and console.mode == 'desktop':
                     return self.reply(200, {'token': console.connect(body)})
                 if self.path.startswith('/api/account/'):
@@ -764,6 +913,10 @@ def handler_for(console):
                     console.local_setup(body)
                 elif self.path == '/api/settings':
                     console.save(body)
+                elif self.path.startswith('/api/settings/'):
+                    console.save_group(self.path.removeprefix('/api/settings/'), body)
+                elif self.path == '/api/automation':
+                    console.automation(body)
                 elif self.path == '/api/run':
                     console.start()
                 elif self.path == '/api/stop':
@@ -773,6 +926,8 @@ def handler_for(console):
                 self.reply(200, self.status())
             except LoginError as error:
                 self.reply(400, {'error': str(error)})
+            except SettingsError as error:
+                self.reply(400, {'error': str(error), 'field': error.field})
             except LowStorageError:
                 self.reply(409, {'error': '存储空间不足，归档已暂停；释放空间后再运行，至少保留 5 GB'})
             except (ValueError, UnicodeError):

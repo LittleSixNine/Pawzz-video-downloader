@@ -17,6 +17,7 @@ import time
 from urllib.request import urlopen
 
 import paho.mqtt.client as mqtt
+from diagnostics import event, phase
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.properties import Properties
 
@@ -76,6 +77,8 @@ class DeviceClient:
             self.auth_rejected = any(code.value == 135 for code in reason_codes)
             self.failure = "MQTT subscription rejected"
         self.ready.set()
+        if not self.failure:
+            event('mqtt', 'subscribed')
 
     def _message(self, client, userdata, message):
         try:
@@ -87,10 +90,12 @@ class DeviceClient:
 
     def _disconnected(self, client, userdata, flags, reason_code, properties):
         if reason_code.is_failure:
+            event('mqtt', 'disconnected')
             self.auth_rejected = reason_code.value == 135
             self.failure = f"MQTT disconnected: {reason_code}"
             self.messages.put({})
 
+    @phase('mqtt')
     def __enter__(self):
         props = Properties(PacketTypes.CONNECT)
         props.UserProperty = [("productId", "pa"), ("userAgent", "android"), ("version", "2.2.0")]

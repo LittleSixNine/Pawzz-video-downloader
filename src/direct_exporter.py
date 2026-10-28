@@ -18,6 +18,9 @@ from datetime import datetime, timedelta
 
 from synology_exporter import DeviceClient, INTERVALS, read_session, AuthenticationError
 from timeline_protocol import _head
+from device_discovery import DiscoveryError, discover_device, normalize_mac
+from diagnostics import event, phase, error_fields
+from media_tools import ffmpeg_path
 
 SOURCE = re.compile(r'/data_fs/record/(\d{8})/(\d{6}\.\d{3}\.mp4)')
 MD5 = re.compile(r'[0-9a-f]{32}')
@@ -73,6 +76,8 @@ class Receiver:
         self.error = None
         self.before = self.after = None
         self.data = None
+        self.rejections = set()
+        self.stage = 'catalog' if destination is None else 'transfer'
         outer = self
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -85,6 +90,11 @@ class Receiver:
                 route = self.path.removeprefix('/' + outer.key)
                 if (self.client_address[0] != device_ip or
                     self.path not in ('/' + outer.key + '/file', '/' + outer.key + '/done')):
+                    reason = ('route_mismatch' if self.path not in ('/' + outer.key + '/file', '/' + outer.key + '/done')
+                              else 'source_mismatch')
+                    if reason not in outer.rejections:
+                        outer.rejections.add(reason)
+                        event(outer.stage, 'callback_rejected', reason=reason, http_status=403)
                     self.send_error(403)
                     return
                 try:
@@ -131,11 +141,14 @@ class Receiver:
                     self.send_response(200)
                     self.end_headers()
                     self.wfile.write(b'OK')
+                    event(outer.stage, 'callback_received', bytes=length, http_status=200)
                 except Exception as error:
+                    event(outer.stage, 'callback_rejected', **dict(error_fields(error), http_status=400))
                     outer.error = type(error).__name__
                     outer.done.set()
                     self.send_error(400)
-        self.server = HTTPServer((bind_ip, port), Handler)
+        with phase(self.stage):
+            self.server = HTTPServer((bind_ip, port), Handler)
         self.worker = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def __enter__(self):
@@ -170,10 +183,15 @@ def request(device, cfg, receiver, operation):
     base = f"http://{cfg['advertise']}:{cfg['port']}/{receiver.key}"
     curl = "/oem/tool/curl --noproxy '*' -fsS --connect-timeout 10 --max-time 300"
     script = operation(base, curl)
-    publish(device, 'enable_remote_telnet', {'svr_ip': f"{cfg['advertise']} & {{ {script}; }}"})
-    receiver.wait(330)
+    stage = 'transfer' if getattr(receiver, 'destination', None) is not None else 'catalog'
+    with phase(stage):
+        publish(device, 'enable_remote_telnet', {'svr_ip': f"{cfg['advertise']} & {{ {script}; }}"})
+        event(stage, 'command_sent')
+        event(stage, 'waiting')
+        receiver.wait(330)
 
 
+@phase('repair')
 def repair_video(original, output):
     target = output / 'repaired' / original.relative_to(output)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -193,9 +211,12 @@ def repair_video(original, output):
     partial = target.with_suffix('.mp4.repair.part')
     temporary = metadata.with_suffix('.json.part')
     partial.unlink(missing_ok=True)
+    executable = ffmpeg_path()
+    if not executable:
+        raise RepairError('FFmpeg required for lossless repair')
     def run(arguments):
         try:
-            return subprocess.run(['ffmpeg', '-hide_banner', '-v', 'error', '-nostdin', *arguments],
+            return subprocess.run([executable, '-hide_banner', '-v', 'error', '-nostdin', *arguments],
                                   check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   timeout=300).stdout
         except (OSError, subprocess.SubprocessError):
@@ -221,6 +242,7 @@ def repair_video(original, output):
         temporary.unlink(missing_ok=True)
 
 
+@phase('transfer')
 def export_one(device, cfg, source):
     match = source_path(source)
     target = cfg['output'] / match[1] / match[2]
@@ -246,9 +268,10 @@ def export_one(device, cfg, source):
             request(device, cfg, receiver, operation)
             if receiver.skipped:
                 return False
-            local = digest_file(partial)
-            if receiver.before != local or receiver.after != local:
-                raise ValueError('source changed or file checksum mismatch')
+            with phase('checksum'):
+                local = digest_file(partial)
+                if receiver.before != local or receiver.after != local:
+                    raise ValueError('source changed or file checksum mismatch')
             record = {'source': source, 'bytes': partial.stat().st_size,
                       'md5_before': receiver.before, 'md5_after': receiver.after,
                       'md5_local': local, 'verified_at': datetime.now().isoformat()}
@@ -265,23 +288,49 @@ def export_one(device, cfg, source):
         partial.unlink(missing_ok=True)
 
 
-def retry_read(operation):
+def retry_read(operation, stage='catalog'):
     for attempt in range(4):
         try:
             return operation()
         except TimeoutError:
             if attempt == 3:
                 raise
+            event(stage, 'retry', attempt=attempt + 1, max_attempts=3)
             print(f'read retry: {attempt + 1}/3', flush=True)
             time.sleep(5)
 
 
 def export_cycle(cfg):
-    if cfg.get('repair', False) and not shutil.which('ffmpeg'):
+    if cfg.get('repair', False) and not ffmpeg_path():
         raise RepairError('FFmpeg required for lossless repair')
-    user, token = read_session(cfg['session'])
-    cfg['output'].mkdir(parents=True, exist_ok=True)
-    require_storage(cfg['output'])
+    with phase('session'):
+        user, token = read_session(cfg['session'])
+    with phase('storage'):
+        cfg['output'].mkdir(parents=True, exist_ok=True)
+        require_storage(cfg['output'])
+    cfg = cfg.copy()
+    fallback = bool(cfg.get('device') and cfg.get('device_mac'))
+    if not cfg.get('device') and cfg.get('device_mac'):
+        with phase('mac_discovery'):
+            cfg = dict(cfg, device=discover_device(cfg['device_mac'], cfg['advertise']))
+
+    def read(operation, stage='catalog'):
+        def attempt():
+            nonlocal fallback, cfg
+            try:
+                return operation()
+            except TimeoutError:
+                if not fallback:
+                    raise
+                fallback = False
+                event('mac_discovery', 'retry', attempt=1, max_attempts=1)
+                with phase('mac_discovery'):
+                    address = discover_device(cfg['device_mac'], cfg['advertise'])
+                if address == cfg['device']:
+                    raise
+                cfg = dict(cfg, device=address)
+                return operation()
+        return retry_read(attempt, stage)
     count = 0
     with DeviceClient(user, cfg['serial'], token) as device:
         try:
@@ -299,26 +348,32 @@ def export_cycle(cfg):
                         if not lines or lines[0] != 'CATALOG':
                             raise ValueError('invalid catalog')
                         return sorted(set(lines[1:]))
-                candidates = retry_read(discover)
+                candidates = read(discover)
+            event('catalog', 'success', count=len(candidates))
             cutoff = datetime.now() - timedelta(minutes=10)
             for source in candidates:
                 match = source_path(source)
                 timestamp = datetime.strptime(match[1] + match[2][:6], '%Y%m%d%H%M%S')
                 if timestamp > cutoff or (cfg['start'] and match[1] < cfg['start']):
                     continue
-                count += int(retry_read(lambda: export_one(device, cfg, source)))
+                count += int(read(lambda: export_one(device, cfg, source), stage='transfer'))
+                event('transfer', 'success', count=count)
         finally:
-            publish(device, 'disenable_remote_telnet', {})
+            with phase('cleanup'):
+                publish(device, 'disenable_remote_telnet', {})
     return count
 
 
-def config(env=None):
+def config(env=None, allow_incomplete=False):
     env = os.environ if env is None else env
     if env.get('PAWZZ_ALLOW_MAINTENANCE') != 'yes':
         raise ValueError('explicit PAWZZ_ALLOW_MAINTENANCE=yes required')
-    device = str(ipaddress.IPv4Address(env['PAWZZ_DEVICE_IP']))
-    advertise = str(ipaddress.IPv4Address(env['PAWZZ_CALLBACK_IP']))
-    if not ipaddress.ip_address(device).is_private or not ipaddress.ip_address(advertise).is_private:
+    mac = normalize_mac(env['PAWZZ_DEVICE_MAC']) if env.get('PAWZZ_DEVICE_MAC') else ''
+    device = str(ipaddress.IPv4Address(env['PAWZZ_DEVICE_IP'])) if env.get('PAWZZ_DEVICE_IP') else None
+    advertise = str(ipaddress.IPv4Address(env['PAWZZ_CALLBACK_IP'])) if env.get('PAWZZ_CALLBACK_IP') else None
+    if ((not allow_incomplete and (not (device or mac) or not advertise))
+            or (device and not ipaddress.ip_address(device).is_private)
+            or (advertise and not ipaddress.ip_address(advertise).is_private)):
         raise ValueError('local network addresses required')
     port = int(env.get('PAWZZ_CALLBACK_PORT', '10003'))
     if not 1024 <= port <= 65535:
@@ -329,7 +384,7 @@ def config(env=None):
     source = env.get('PAWZZ_SOURCE', '')
     if source:
         source_path(source)
-    return dict(device=device, advertise=advertise, port=port,
+    return dict(device=device, device_mac=mac, advertise=advertise, port=port,
                 bind=str(ipaddress.IPv4Address(env.get('PAWZZ_BIND_IP', '0.0.0.0'))),
                 serial=env['PAWZZ_SN'], session=int(env['PAWZZ_SESSION_FD']) if env.get('PAWZZ_SESSION_FD') else Path(env['PAWZZ_SESSION_FILE']),
                 output=Path(env.get('PAWZZ_OUTPUT_DIR', '/videos')),
@@ -340,6 +395,8 @@ def config(env=None):
 
 def failure_hint(error):
     # Fixed messages keep session values and private paths out of container logs.
+    if isinstance(error, DiscoveryError):
+        return str(error) + ': check device MAC, same LAN and iproute2'
     if isinstance(error, RepairError):
         return 'repair_failed: check FFmpeg and repaired files; originals retained'
     if isinstance(error, AuthenticationError):
@@ -366,6 +423,7 @@ def main():
     try:
         cfg = config()
     except (ValueError, KeyError, TypeError) as error:
+        event('task', 'failed', **error_fields(error))
         print('startup failed: configuration; ' + failure_hint(error), flush=True)
         return 2
     while True:
@@ -382,6 +440,7 @@ def main():
             print('cycle paused: low_storage', flush=True)
             return 3
         except Exception as error:
+            event('task', 'failed', **error_fields(error))
             print('cycle failed: ' + failure_hint(error), flush=True)
             if cfg['once']:
                 return 1

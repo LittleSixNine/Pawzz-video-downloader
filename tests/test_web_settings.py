@@ -68,6 +68,20 @@ class WebSettingsTests(unittest.TestCase):
             self.assertNotIn(self.console.token.encode(), data)
         self.assertEqual(self.request('/../config/admin-token')[0], 404)
 
+    def test_notification_policy_is_sender_owned_and_does_not_change_download_retries(self):
+        self.assertEqual(self.request('/api/notification-settings', auth=False)[0], 401)
+        before = self.console.settings.copy()
+        policy = dict(failure_threshold=2, reminder_minutes=15, recovery=True, immediate_codes=['auth_expired'])
+        code, payload = self.request('/api/notification-settings', policy)
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(payload)['policy'], policy)
+        self.assertEqual(self.console.settings, before)
+        self.assertEqual(MAX_RETRIES, 3)
+        saved = self.root / 'config/notify-policy.json'
+        self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.request('/api/notification-settings', dict(policy, failure_threshold=0))[0], 400)
+        self.assertNotIn('token', json.loads(self.request('/api/notification-settings')[1]))
+
     def test_validation_and_private_persistence(self):
         for update in ({'device_ip': '8.8.8.8'}, {'source': '/tmp/x;id'},
                        {'callback_port': 8080}, {'callback_port': -1},
@@ -86,6 +100,20 @@ class WebSettingsTests(unittest.TestCase):
         self.assertEqual(self.console.settings, VALID)
         self.assertIsNone(self.console.process)
 
+    def test_mac_only_settings_survive_restart_and_discovery_failure_is_actionable(self):
+        settings = dict(VALID, device_ip='', device_mac='02:11:22:33:44:55')
+        code, payload = self.request('/api/settings', settings)
+        self.assertEqual(code, 200)
+        self.assertTrue(json.loads(payload)['configured'])
+        self.console.close()
+        self.console = Console(self.root / 'config', self.env)
+        self.assertEqual(self.console.settings, settings)
+        record = dict(new_files=0)
+        self.console.watch(SimpleNamespace(stdout=io.StringIO(
+            'cycle failed: device_not_found: check device MAC, same LAN and iproute2\n'), wait=lambda: 1), record)
+        self.assertIn('未发现设备', record['result'])
+        self.assertEqual(record['state'], 'failed')
+
     def test_actual_worker_failure_keeps_web_server_alive(self):
         # Malformed synthetic session fails before any MQTT or device connection.
         self.session.write_text('{"token":"SYNTHETIC_DO_NOT_LOG"}')
@@ -102,7 +130,7 @@ class WebSettingsTests(unittest.TestCase):
         self.assertNotIn(b'SYNTHETIC_DO_NOT_LOG', payload)
         self.assertIn('配置或校验', status['last_result'])
 
-    def test_stop_disables_automatic_and_rejects_parallel_job(self):
+    def test_stop_preserves_automatic_and_rejects_parallel_job(self):
         import subprocess
         import sys
         # Substitute a harmless sleeping child, not a device-connected worker.
@@ -119,8 +147,8 @@ class WebSettingsTests(unittest.TestCase):
             self.console.stop()
             self.console.monitor.join(timeout=5)
         self.assertIsNone(self.console.process)
-        self.assertFalse(self.console.settings['automatic'])
-        self.assertIsNone(self.console.next_run)
+        self.assertTrue(self.console.settings['automatic'])
+        self.assertEqual(self.console.next_kind, 'scheduled')
 
     def test_history_survives_restart_without_private_worker_output(self):
         self.test_actual_worker_failure_keeps_web_server_alive()
@@ -244,7 +272,7 @@ class WebSettingsTests(unittest.TestCase):
             self.assertEqual(self.console.next_kind, expected)
             if code == 3:
                 self.assertEqual(record['state'], 'paused')
-        self.console.stop()
+        self.console.automation({'enabled': False})
         self.assertIsNone(self.console.next_run)
         self.assertEqual(self.console.retry_count, 0)
 
